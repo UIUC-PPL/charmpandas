@@ -1,0 +1,9 @@
+module partition
+{
+    array [1D] Partition
+    {
+        entry Partition(int num_partitions);
+
+        entry void read_parquet(int table_name, char file_path[size], int size);
+    };
+}

@@ -1,0 +1,9 @@
+mainmodule server
+{
+    extern module partition;
+
+    mainchare Main
+    {
+        entry Main(CkArgMsg*);
+    };
+}
