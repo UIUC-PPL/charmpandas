@@ -1,9 +1,6 @@
 import sys
 import warnings
 import numpy as np
-from charmstencil.interface import DummyInterface
-from charmstencil.ast import StencilGraph, IterateGraph, BoundaryGraph, \
-    FieldOperationNode, CreateFieldNode
 
 
 try:

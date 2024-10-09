@@ -90,8 +90,11 @@ public:
         uint8_t client = extract<uint8_t>(cmd);
         int table_name = extract<int>(cmd);
         int path_size = extract<int>(cmd);
+        CkPrintf("Size = %i\n", path_size);
         CProxy_Partition* partition = lookup(client);
-        partition->read_parquet(table_name, cmd, path_size);
+        std::string file_path(cmd, path_size);
+        CkPrintf("Reading file: %s\n", file_path.c_str());
+        partition->read_parquet(table_name, file_path);
     }
 
     inline static void exit_server(char* msg)

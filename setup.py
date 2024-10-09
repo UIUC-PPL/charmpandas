@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 
 def get_version():
     data = {}
-    fname = os.path.join('charmstencil', '__init__.py')
+    fname = os.path.join('charmpandas', '__init__.py')
     exec(compile(open(fname).read(), fname, 'exec'), data)
     return data.get('__version__')
 
@@ -41,11 +41,11 @@ classifiers = [x.strip() for x in classes.splitlines() if x]
 #compile_server()
 
 setup(
-    name='charmstencil',
-    version=get_version(),
+    name='charmpandas',
+    #version=get_version(),
     author='Aditya Bhosale',
     author_email='adityapb1546@gmail.com',
-    description='A python library for distributed stencil computations',
+    description='A python library for distributed pandas',
     long_description=open('README.rst').read(),
     license="BSD",
     #url='https://github.com/UIUC-PPL/PyProject',

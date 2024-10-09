@@ -50,6 +50,7 @@ class CCSInterface(Interface):
     def __init__(self, server_ip, server_port, odf=4):
         self.server = Server(server_ip, server_port)
         self.server.connect()
+        self.epoch = 0
         self.client_id = self.send_command(Handlers.connection_handler, to_bytes(odf, 'i'))
 
     def __del__(self):
@@ -63,7 +64,7 @@ class CCSInterface(Interface):
         cmd = to_bytes(self.client_id, 'B')
         cmd += to_bytes(table_name, 'i')
         cmd += to_bytes(len(file_path), 'i')
-        cmd += to_bytes(file_path, 's')
+        cmd += to_bytes(file_path.encode('utf-8'), '%is' % len(file_path))
         self.send_command_async(Handlers.read_handler, cmd)
 
     def send_command_raw(self, handler, msg, reply_size):

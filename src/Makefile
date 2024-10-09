@@ -17,7 +17,7 @@ partition.decl.h: partition.ci partition.hpp
 
 partition.def.h: partition.ci partition.hpp
 
-server.o: server.cpp server.decl.h server.def.h server.hpp partition.decl.h partition.def.h partition.hpp utils.hpp
+server.o: server.cpp server.decl.h server.def.h server.hpp partition.decl.h partition.def.h partition.hpp utils.hpp serialize.hpp
 	$(CHARMC) `pkg-config --cflags --libs arrow` -c $< $(OPTS)
 
 server.out: server.o

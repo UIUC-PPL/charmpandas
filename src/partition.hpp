@@ -8,6 +8,7 @@
 #include <arrow/table.h>
 #include <parquet/arrow/reader.h>
 #include "utils.hpp"
+#include "serialize.hpp"
 #include "partition.decl.h"
 
 
@@ -27,7 +28,9 @@ public:
         // delete tables?
     }
 
-    void read_parquet(int table_name, char* file_path, int size)
+    //void add_column(int table_name, )
+
+    void read_parquet(int table_name, std::string file_path)
     {
         std::shared_ptr<arrow::io::ReadableFile> input_file;
         input_file = arrow::io::ReadableFile::Open(file_path).ValueOrDie();
@@ -81,9 +84,6 @@ public:
             std::shared_ptr<arrow::Table> sliced_table = table->Slice(start_row, rows_in_group);
             row_tables.push_back(sliced_table);
 
-            // Process the table as needed
-            //std::cout << "Read " << table->num_rows() << " rows from row group " << i << std::endl;
-
             // Update counters
             rows_read += table->num_rows();
             rows_to_read -= table->num_rows();
@@ -92,6 +92,8 @@ public:
 
         std::shared_ptr<arrow::Table> combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
         tables[table_name] = combined;
+
+        CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
     }
 };
 
