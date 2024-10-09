@@ -9,16 +9,17 @@
 #include <parquet/arrow/reader.h>
 #include "utils.hpp"
 #include "serialize.hpp"
-#include "partition.decl.h"
+#include "server.decl.h"
 
 
 class TableDataMsg : public CMessage_TableDataMsg
 {
+public:
     char* data;
     int epoch;
     int size;
 
-    TableDataMsg(int epoch_, int size_, char* data_)
+    TableDataMsg(int epoch_, int size_)
         : epoch(epoch_)
         , size(size_)
     {}
@@ -179,4 +180,4 @@ public:
     }
 };
 
-#include "partition.def.h"
+#include "server.def.h"
