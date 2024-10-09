@@ -1,0 +1,34 @@
+module partition
+{
+    message TableDataMsg
+    {
+        char data[];
+    };
+
+    group Aggregator
+    {
+        entry Aggregator();
+
+        entry void fetch_callback(TableDataMsg* msg);
+    }
+
+    array [1D] Partition
+    {
+        entry Partition(int num_partitions, CProxy_Aggregator agg_proxy);
+
+        entry void receive_command(int epoch, int size, char cmd[size]);
+
+        entry void gather_table(TableDataMsg* msg);
+
+        entry void start()
+        {
+            while (EPOCH > -1)
+            {
+                when receive_command[EPOCH] (int epoch, int size, char cmd[size])
+                    serial "execute command" {
+                        execute_command(epoch, size, cmd);
+                    }
+            }
+        };
+    };
+}

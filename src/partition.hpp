@@ -9,7 +9,10 @@
 #include <parquet/arrow/reader.h>
 #include "utils.hpp"
 #include "serialize.hpp"
-#include "server.decl.h"
+#include "partition.decl.h"
+
+
+CcsDelayedReply fetch_reply;
 
 
 class TableDataMsg : public CMessage_TableDataMsg
@@ -22,14 +25,28 @@ public:
     TableDataMsg(int epoch_, int size_)
         : epoch(epoch_)
         , size(size_)
+        , data(nullptr)
     {}
+};
+
+
+class Aggregator : public CBase_Aggregator
+{
+public:
+    Aggregator() {}
+
+    void fetch_callback(TableDataMsg* msg)
+    {
+        CkAssert(CkMyPe() == 0);
+        CcsSendDelayedReply(fetch_reply, msg->size, msg->data);
+    }
 };
 
 
 class Partition : public CBase_Partition
 {
 private:
-    CProxy_Main main_proxy;
+    CProxy_Aggregator agg_proxy;
     int num_partitions;
     int EPOCH;
     std::unordered_map<int, std::shared_ptr<arrow::Table>> tables;
@@ -40,9 +57,9 @@ private:
 public:
     Partition_SDAG_CODE
 
-    Partition(int num_partitions_, CProxy_Main main_proxy_) 
+    Partition(int num_partitions_, CProxy_Aggregator agg_proxy_) 
         : num_partitions(num_partitions_)
-        , main_proxy(main_proxy_)
+        , agg_proxy(agg_proxy_)
         , EPOCH(0)
     {}
 
@@ -72,11 +89,20 @@ public:
             case Operation::Fetch:
             {
                 int table_name = extract<int>(cmd);
-                auto table = tables[table_name];
-                std::shared_ptr<arrow::Buffer> out;
-                serialize(table, out);
-                TableDataMsg* msg = new (out->size()) TableDataMsg(epoch, out->size());
-                std::memcpy(msg->data, out->data(), out->size());
+                auto it = tables.find(table_name);
+                TableDataMsg* msg;
+                if (it != std::end(tables))
+                {
+                    auto table = tables[table_name];
+                    std::shared_ptr<arrow::Buffer> out;
+                    serialize(table, out);
+                    msg = new (out->size()) TableDataMsg(epoch, out->size());
+                    std::memcpy(msg->data, out->data(), out->size());
+                }
+                else
+                {
+                    msg = new (0) TableDataMsg(epoch, 0);
+                }
                 thisProxy[0].gather_table(msg);
                 break;
             }
@@ -102,14 +128,20 @@ public:
         {
             std::vector<std::shared_ptr<arrow::Table>> gathered_tables;
             for (int i = 0; i < gather_buffer.size(); i++)
-                gathered_tables.push_back(deserialize(gather_buffer[msg->epoch]->data));
+            {
+                TableDataMsg* buff_msg = gather_buffer[msg->epoch][i];
+                if (buff_msg->data == nullptr)
+                    continue;
+                gathered_tables.push_back(deserialize(buff_msg->data, buff_msg->size));
+            }
             // table is gathered, send to server and reply ccs
-            auto combined_table = arrow::Concatenate(gathered_tables);
+            auto combined_table = arrow::ConcatenateTables(gathered_tables).ValueOrDie();
             std::shared_ptr<arrow::Buffer> out;
             serialize(combined_table, out);
             TableDataMsg* combined_msg = new (out->size()) TableDataMsg(msg->epoch, out->size());
             std::memcpy(combined_msg->data, out->data(), out->size());
-            main_proxy.fetch_callback(combined_msg);
+            agg_proxy[0].fetch_callback(combined_msg);
+            // FIXME delete saved msgs and combined_msg here
         }
     }
 
@@ -180,4 +212,4 @@ public:
     }
 };
 
-#include "server.def.h"
+#include "partition.def.h"

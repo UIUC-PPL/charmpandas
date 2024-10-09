@@ -5,12 +5,12 @@
 #include <unordered_map>
 #include "partition.hpp"
 
-
 std::unordered_map<uint8_t, CProxy_Partition> partitions;
 std::stack<uint8_t> client_ids;
 
-CProxy_Main main_proxy;
-CcsDelayReply fetch_reply;
+CProxy_Aggregator agg_proxy;
+
+extern CcsDelayedReply fetch_reply;
 
 
 class Server
@@ -64,10 +64,6 @@ public:
         return &(find->second);
     }
 
-    static void fetch_handler(char* msg)
-    {
-    }
-
     static void connection_handler(char* msg)
     {
         uint8_t client_id = get_client_id();
@@ -105,7 +101,7 @@ public:
         int epoch = extract<int>(cmd);
         int size = extract<int>(cmd);
         CProxy_Partition* partition = lookup(client);
-        fetch_reply = CcsDelayReply();
+        fetch_reply = CcsDelayedReply();
         partition->receive_command(epoch, size, cmd);
     }
 
@@ -124,7 +120,7 @@ public:
                 client, total_chares);
 #endif
 
-        CProxy_Partition new_partition = CProxy_Partition::ckNew(total_chares, main_proxy, total_chares);
+        CProxy_Partition new_partition = CProxy_Partition::ckNew(total_chares, agg_proxy, total_chares);
         insert(client, new_partition);
         return new_partition;
     }
