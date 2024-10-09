@@ -14,6 +14,13 @@ class Handlers(object):
     connection_handler = b'connect'
     disconnection_handler = b'disconnect'
     read_handler = b'read'
+    fetch_handler = b'fetch'
+
+
+class Operations(object):
+    read = 0
+    fetch = 1
+    add_column = 2
 
 
 class Interface(object):
@@ -37,6 +44,9 @@ class DummyInterface(Interface):
     def read_parquet(self, table_name, file_path):
         pass
 
+    def fetch_table(self, table_name):
+        pass
+
 
 class DebugInterface(Interface):
     def __init__(self):
@@ -45,6 +55,9 @@ class DebugInterface(Interface):
     def read_parquet(self, table_name, file_path):
         pass
 
+    def fetch_table(self, table_name):
+        pass
+    
 
 class CCSInterface(Interface):
     def __init__(self, server_ip, server_port, odf=4):
@@ -62,10 +75,31 @@ class CCSInterface(Interface):
 
     def read_parquet(self, table_name, file_path):
         cmd = to_bytes(self.client_id, 'B')
-        cmd += to_bytes(table_name, 'i')
-        cmd += to_bytes(len(file_path), 'i')
-        cmd += to_bytes(file_path.encode('utf-8'), '%is' % len(file_path))
+        cmd += to_bytes(self.epoch, 'i')
+        
+        gcmd = to_bytes(Operations.read, 'i')
+        gcmd += to_bytes(table_name, 'i')
+        gcmd += to_bytes(len(file_path), 'i')
+        gcmd += to_bytes(file_path.encode('utf-8'), '%is' % len(file_path))
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+
+        self.epoch += 1
         self.send_command_async(Handlers.read_handler, cmd)
+
+    def fetch_table(self, table_name):
+        cmd = to_bytes(self.client_id, 'B')
+        cmd += to_bytes(self.epoch, 'i')
+
+        gcmd = to_bytes(Operations.fetch, 'i')
+        gcmd += to_bytes(table_name, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+
+        self.epoch += 1
+        return self.send_command(Handlers.fetch_handler, cmd)
 
     def send_command_raw(self, handler, msg, reply_size):
         self.server.send_request(handler, 0, msg)

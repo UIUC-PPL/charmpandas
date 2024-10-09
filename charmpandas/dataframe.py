@@ -87,3 +87,7 @@ class DataFrame(object):
         if isinstance(data, str):
             interface.read_parquet(self.name, data)
 
+    def get(self):
+        interface = get_interface()
+        return interface.fetch_table(self.name)
+

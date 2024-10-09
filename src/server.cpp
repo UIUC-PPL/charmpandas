@@ -12,6 +12,7 @@ public:
     {
         Server::initialize();
         register_handlers();
+        main_proxy = thisProxy;
 #ifndef NDEBUG
         CkPrintf("Initialization done\n");
 #endif
@@ -22,11 +23,17 @@ public:
         CcsRegisterHandler("connect", (CmiHandler) Server::connection_handler);
         CcsRegisterHandler("disconnect", (CmiHandler) Server::disconnection_handler);
         CcsRegisterHandler("read", (CmiHandler) Server::read_handler);
+        CcsRegisterHandler("fetch", (CmiHandler) Server::fetch_handler);
         //CcsRegisterHandler("aum_operation", (CmiHandler) Server::operation_handler);
         //CcsRegisterHandler("aum_sync", (CmiHandler) Server::sync_handler);
         //CcsRegisterHandler("aum_fetch", (CmiHandler) Server::fetch_handler);
         //CcsRegisterHandler("aum_delete", (CmiHandler) Server::delete_handler);
         //CcsRegisterHandler("aum_exit", (CmiHandler) Server::exit_server);
+    }
+
+    void fetch_callback(TableDataMsg* msg)
+    {
+        CcsSendDelayedReply(fetch_reply, msg->size, msg->data);
     }
 };
 

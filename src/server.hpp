@@ -9,6 +9,9 @@
 std::unordered_map<uint8_t, CProxy_Partition> partitions;
 std::stack<uint8_t> client_ids;
 
+CProxy_Main main_proxy;
+CcsDelayReply fetch_reply;
+
 
 class Server
 {
@@ -70,7 +73,8 @@ public:
         uint8_t client_id = get_client_id();
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         int odf = extract<int>(cmd);
-        create_partition(client_id, odf);
+        CProxy_Partition partition = create_partition(client_id, odf);
+        partition.start();
         CcsSendReply(1, (void*) &client_id);
     }
 
@@ -88,13 +92,21 @@ public:
     {
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         uint8_t client = extract<uint8_t>(cmd);
-        int table_name = extract<int>(cmd);
-        int path_size = extract<int>(cmd);
-        CkPrintf("Size = %i\n", path_size);
+        int epoch = extract<int>(cmd);
+        int size = extract<int>(cmd);
         CProxy_Partition* partition = lookup(client);
-        std::string file_path(cmd, path_size);
-        CkPrintf("Reading file: %s\n", file_path.c_str());
-        partition->read_parquet(table_name, file_path);
+        partition->receive_command(epoch, size, cmd);
+    }
+
+    static void fetch_handler(char* msg)
+    {
+        char* cmd = msg + CmiMsgHeaderSizeBytes;
+        uint8_t client = extract<uint8_t>(cmd);
+        int epoch = extract<int>(cmd);
+        int size = extract<int>(cmd);
+        CProxy_Partition* partition = lookup(client);
+        fetch_reply = CcsDelayReply();
+        partition->receive_command(epoch, size, cmd);
     }
 
     inline static void exit_server(char* msg)
@@ -112,7 +124,7 @@ public:
                 client, total_chares);
 #endif
 
-        CProxy_Partition new_partition = CProxy_Partition::ckNew(total_chares, total_chares);
+        CProxy_Partition new_partition = CProxy_Partition::ckNew(total_chares, main_proxy, total_chares);
         insert(client, new_partition);
         return new_partition;
     }

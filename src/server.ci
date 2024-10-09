@@ -2,8 +2,12 @@ mainmodule server
 {
     extern module partition;
 
+    readonly CProxy_Main main_proxy;
+
     mainchare Main
     {
         entry Main(CkArgMsg*);
+
+        entry void fetch_callback(TableDataMsg* msg);
     };
 }
