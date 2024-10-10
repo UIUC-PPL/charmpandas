@@ -5,6 +5,17 @@ module partition
         char data[];
     };
 
+    message JoinTableDataMsg
+    {
+        char data[];
+    };
+
+    message GroupByReductionMsg
+    {
+        char table[];
+        char options[];
+    };
+
     group Aggregator
     {
         entry Aggregator();

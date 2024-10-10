@@ -99,7 +99,7 @@ class CCSInterface(Interface):
         cmd += gcmd
 
         self.epoch += 1
-        return self.send_command(Handlers.fetch_handler, cmd)
+        return self.send_command(Handlers.fetch_handler, cmd, reply_size=8, reply_type='i')
 
     def send_command_raw(self, handler, msg, reply_size):
         self.server.send_request(handler, 0, msg)

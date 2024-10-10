@@ -6,7 +6,9 @@
 #include <arrow/status.h>
 #include <arrow/api.h>
 #include <arrow/table.h>
+#include <arrow/compute/api.h>
 #include <parquet/arrow/reader.h>
+#include "arrow/acero/exec_plan.h"
 #include "utils.hpp"
 #include "serialize.hpp"
 #include "partition.decl.h"
@@ -42,6 +44,27 @@ public:
 };
 
 
+class JoinTableDataMsg : public BaseTableDataMsg, public CMessage_JoinTableDataMsg
+{
+public:
+    int table1_name;
+    int result_name;
+    int join_type;
+    std::string left_key;
+    std::string right_key;
+
+    JoinTableDataMsg(int epoch_, int size_, int table1_name_, int result_name_, int join_type_,
+        std::string left_key_, std::string right_key_)
+        : BaseTableDataMsg(epoch_, size_)
+        , table1_name(table1_name_)
+        , result_name(result_name_)
+        , join_type(join_type_)
+        , left_key(left_key_)
+        , right_key(right_key_)
+    {}
+};
+
+
 // This should not be a group!
 class Aggregator : public CBase_Aggregator
 {
@@ -54,7 +77,7 @@ public:
 
     void gather_table(GatherTableDataMsg* msg)
     {
-        //std::shared_ptr<arrow::Table> table = deserialize(data, size);
+        //TablePtr table = deserialize(data, size);
         auto it = gather_count.find(msg->epoch);
         if (it == gather_count.end())
             gather_count[msg->epoch] = 1;
@@ -64,7 +87,7 @@ public:
 
         if (gather_count[msg->epoch] == msg->num_partitions)
         {
-            std::vector<std::shared_ptr<arrow::Table>> gathered_tables;
+            std::vector<TablePtr> gathered_tables;
             for (int i = 0; i < gather_buffer[msg->epoch].size(); i++)
             {
                 GatherTableDataMsg* buff_msg = gather_buffer[msg->epoch][i];
@@ -76,14 +99,28 @@ public:
             // table is gathered, send to server and reply ccs
             auto combined_table = arrow::ConcatenateTables(gathered_tables).ValueOrDie();
             CkPrintf("Gathered table data in aggregator with size = %i\n", combined_table->num_rows());
-            std::shared_ptr<arrow::Buffer> out;
+            BufferPtr out;
             serialize(combined_table, out);
             fetch_callback(msg->epoch, out);
+
             // FIXME delete saved msgs and combined_msg here
+            clear_gather_buffer(msg->epoch);
         }
     }
 
-    void fetch_callback(int epoch, std::shared_ptr<arrow::Buffer> &out)
+    void clear_gather_buffer(int epoch)
+    {
+        gather_count[epoch] = 0;
+        GatherTableDataMsg* msg;
+        for (int i = 0; i < gather_buffer.size(); i++)
+        {
+            msg = gather_buffer[epoch];
+            delete msg;
+        }
+        gather_buffer[epoch].clear();
+    }
+
+    void fetch_callback(int epoch, BufferPtr &out)
     {
         CkAssert(CkMyPe() == 0);
         CcsSendDelayedReply(fetch_reply[epoch], out->size(), (char*) out->data());
@@ -97,7 +134,8 @@ private:
     CProxy_Aggregator agg_proxy;
     int num_partitions;
     int EPOCH;
-    std::unordered_map<int, std::shared_ptr<arrow::Table>> tables;
+    int join_count;
+    std::unordered_map<int, TablePtr> tables;
 
 public:
     Partition_SDAG_CODE
@@ -106,6 +144,7 @@ public:
         : num_partitions(num_partitions_)
         , agg_proxy(agg_proxy_)
         , EPOCH(0)
+        , join_count(0)
     {}
 
     Partition(CkMigrateMessage* m) {}
@@ -128,6 +167,7 @@ public:
                 std::string file_path(cmd, path_size);
                 CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
                 read_parquet(table_name, file_path);
+                EPOCH++;
                 break;
             }
 
@@ -139,26 +179,141 @@ public:
                 if (it != std::end(tables))
                 {
                     auto table = tables[table_name];
-                    std::shared_ptr<arrow::Buffer> out;
+                    BufferPtr out;
                     serialize(table, out);
                     msg = new (out->size()) GatherTableDataMsg(epoch, out->size(), num_partitions);
                     std::memcpy(msg->data, out->data(), out->size());
                 }
                 else
                 {
-                    CkPrintf("Table not found on chare %i\n", thisIndex);
+                    //CkPrintf("Table not found on chare %i\n", thisIndex);
                     msg = new (0) GatherTableDataMsg(epoch, 0, num_partitions);
                     msg->data = nullptr;
                 }
                 agg_proxy[0].gather_table(msg);
+                EPOCH++;
                 break;
+            }
+
+            case Operation::Join:
+            {
+                int table1 = extract<int>(cmd);
+                int table2 = extract<int>(cmd);
+                int result_name = extract<int>(cmd);
+
+                int key_size = extract<int>(cmd);
+                std::string left_key(cmd, key_size);
+                cmd += key_size
+
+                key_size = extract<int>(cmd);
+                std::string right_key(cmd, key_size);
+                cmd += key_size;
+
+                arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(extract<int>(cmd));
+
+                auto it1 = tables.find(table1);
+                auto it2 = tables.find(table2);
+
+                if (it1 != std::end(tables) && it2 != std::end(tables))
+                {
+                    // only join locally if both tables are in the chare
+                    arrow::acero::HashJoinNodeOptions join_opts{
+                        type, {left_key}, {right_key}, arrow::compute::literal(true),
+                        "_l", "_r"
+                    };
+                    local_join(it1->second, it2->second, result_name, join_opts);
+                }
+
+                if (num_partitions > 1)
+                {
+                    JoinTableDataMsg* msg;
+                    if (it2 != std::end(tables))
+                    {
+                        BufferPtr out;
+                        serialize(it2->second, out);
+                        msg = new (out->size()) JoinTableDataMsg(
+                            epoch, out->size(), table1, result_name, type,
+                            left_key, right_key);
+                        std::memcpy(msg->data, out->data(), out->size());
+                    }
+                    else
+                    {
+                        msg = new (0) JoinTableDataMsg(epoch, 0, table1, result_name, 
+                            type, left_key, right_key);
+                        msg->data = nullptr;
+                    }
+                    thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
+                }
+            }
+
+            case Operation::Print:
+            {
+                int table_name = extract<int>(cmd);
+                auto it = tables.find(table_name);
+                if (it != std::end(tables))
+                    CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
+                else
+                    CkPrintf("[%d]Table not on this partition\n");
+                EPOCH++;
             }
         
             default:
                 break;
         }
+    }
 
-        EPOCH++;
+    void remote_join(JoinTableDataMsg* msg)
+    {
+        if (msg->data != nullptr)
+        {
+            TablePtr t2 = deserialize(msg->data, msg->size);
+            
+            auto it1 = tables.find(msg->table1_name);
+            if (it1 != std::end(tables))
+            {
+                arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(msg->join_type);
+                arrow::acero::HashJoinNodeOptions join_opts{
+                    type, {msg->left_key}, {msg->right_key}, arrow::compute::literal(true),
+                    "_l", "_r"
+                };
+                local_join(it1->second, t2, msg->result_name, join_opts);
+            }
+        }
+
+        if (++join_count == num_partitions)
+        {
+            EPOCH++;
+            join_count = 0;
+        }
+        else
+        {
+            // send t2 forward
+            // TODO create fwd_msg
+            thisProxy[(thisIndex + 1) % num_partitions].remote_join(fwd_msg);
+        }
+    }
+
+    void local_join(TablePtr &t1, TablePtr &t2, int result_name, arrow::acero::HashJoinNodeOptions &join_opts)
+    {
+        // join t1 and t2 and concatenate to result
+        arrow::acero::Declaration left{"table_source", arrow::acero::TableSourceNodeOptions(t1)};
+        arrow::acero::Declaration right{"table_source", arrow::acero::TableSourceNodeOptions(t2)};
+
+        arrow::acero::Declaration hashjoin{"hashjoin", {std::move(left), std::move(right), join_opts}};
+
+        // Collect the results
+        TablePtr result_table;
+        result_table = arrow::acero::DeclarationToTable(std::move(hashjoin));
+
+        auto it = tables.find(result_name);
+        if (it != std::end(tables))
+        {
+            it->second = arrow::ConcatenateTables({it->second, result_table});
+        }
+        else
+        {
+            tables[result_name] = result_table;
+        }
     }
 
     void read_parquet(int table_name, std::string file_path)
@@ -194,7 +349,7 @@ public:
         int64_t rows_read = 0;
         int64_t rows_to_read = nrows_per_partition;
 
-        std::vector<std::shared_ptr<arrow::Table>> row_tables;
+        std::vector<TablePtr> row_tables;
         for (int i = 0; i < num_row_groups && rows_to_read > 0; ++i) 
         {
             int64_t row_group_num_rows = file_metadata->RowGroup(i)->num_rows();
@@ -210,9 +365,9 @@ public:
             int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
 
             // Read the rows
-            std::shared_ptr<arrow::Table> table;
+            TablePtr table;
             reader->ReadRowGroup(i, &table);
-            std::shared_ptr<arrow::Table> sliced_table = table->Slice(start_row, rows_in_group);
+            TablePtr sliced_table = table->Slice(start_row, rows_in_group);
             row_tables.push_back(sliced_table);
 
             // Update counters
@@ -221,7 +376,7 @@ public:
             start_row = 0;  // Reset start_row for subsequent row groups
         }
 
-        std::shared_ptr<arrow::Table> combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
+        TablePtr combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
         tables[table_name] = combined;
 
         CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());

@@ -2,10 +2,11 @@
 #include "arrow/io/api.h"
 #include "arrow/ipc/api.h"
 #include "arrow/ipc/writer.h"
+#include "utils.hpp"
 
-arrow::Status serialize(std::shared_ptr<arrow::Table> &table, std::shared_ptr<arrow::Buffer> &out)
+arrow::Status serialize(TablePtr &table, BufferPtr &out)
 {
-    //std::shared_ptr<arrow::Buffer> out;
+    //BufferPtr out;
     // Create output stream
     ARROW_ASSIGN_OR_RAISE(auto output_stream, arrow::io::BufferOutputStream::Create());
 
@@ -27,9 +28,9 @@ arrow::Status serialize(std::shared_ptr<arrow::Table> &table, std::shared_ptr<ar
     return arrow::Status::OK();
 }
 
-std::shared_ptr<arrow::Table> deserialize(char* data, int size)
+TablePtr deserialize(char* data, int size)
 {
-    std::shared_ptr<arrow::Buffer> buffer = arrow::Buffer::Wrap(data, size);
+    BufferPtr buffer = arrow::Buffer::Wrap(data, size);
 
     std::shared_ptr<arrow::io::BufferReader> input = std::make_shared<arrow::io::BufferReader>(buffer);
 
@@ -37,7 +38,7 @@ std::shared_ptr<arrow::Table> deserialize(char* data, int size)
         arrow::ipc::RecordBatchStreamReader::Open(input).ValueOrDie();
 
     // Create table from batches
-    std::shared_ptr<arrow::Table> table = reader->ToTable().ValueOrDie();
+    TablePtr table = reader->ToTable().ValueOrDie();
 
     return table;
 }
