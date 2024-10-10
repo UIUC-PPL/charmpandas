@@ -1,4 +1,3 @@
-#include <stdexcept>
 #include "arrow/api.h"
 #include "arrow/io/api.h"
 #include "arrow/ipc/api.h"
@@ -34,32 +33,11 @@ std::shared_ptr<arrow::Table> deserialize(char* data, int size)
 
     std::shared_ptr<arrow::io::BufferReader> input = std::make_shared<arrow::io::BufferReader>(buffer);
 
-    arrow::Result<std::shared_ptr<arrow::ipc::RecordBatchStreamReader>> maybe_reader = 
-        arrow::ipc::RecordBatchStreamReader::Open(input);
-
-    if (!maybe_reader.ok()) {
-        // Handle error
-        std::runtime_error("Failed opening buffer reader during deserialization");
-        return nullptr;
-    }
-
-    std::shared_ptr<arrow::ipc::RecordBatchStreamReader> reader = *maybe_reader;
-
-    // Read all record batches
-    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
-    arrow::Result<std::shared_ptr<arrow::RecordBatch>> maybe_batch;
-    while ((maybe_batch = reader->Next()).ok()) {
-        batches.push_back(*maybe_batch);
-    }
+    std::shared_ptr<arrow::ipc::RecordBatchStreamReader> reader = 
+        arrow::ipc::RecordBatchStreamReader::Open(input).ValueOrDie();
 
     // Create table from batches
-    arrow::Result<std::shared_ptr<arrow::Table>> maybe_table = arrow::Table::FromRecordBatches(batches);
+    std::shared_ptr<arrow::Table> table = reader->ToTable().ValueOrDie();
 
-    if (!maybe_table.ok()) {
-        // Handle error
-        std::runtime_error("Table deserialization failed");
-        return nullptr;
-    }
-
-    return *maybe_table;
+    return table;
 }

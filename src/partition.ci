@@ -1,6 +1,6 @@
 module partition
 {
-    message TableDataMsg
+    message GatherTableDataMsg
     {
         char data[];
     };
@@ -9,7 +9,7 @@ module partition
     {
         entry Aggregator();
 
-        entry void fetch_callback(TableDataMsg* msg);
+        entry void gather_table(GatherTableDataMsg* msg);
     }
 
     array [1D] Partition
@@ -17,8 +17,6 @@ module partition
         entry Partition(int num_partitions, CProxy_Aggregator agg_proxy);
 
         entry void receive_command(int epoch, int size, char cmd[size]);
-
-        entry void gather_table(TableDataMsg* msg);
 
         entry void start()
         {

@@ -10,7 +10,7 @@ std::stack<uint8_t> client_ids;
 
 CProxy_Aggregator agg_proxy;
 
-extern CcsDelayedReply fetch_reply;
+extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
 
 
 class Server
@@ -101,7 +101,7 @@ public:
         int epoch = extract<int>(cmd);
         int size = extract<int>(cmd);
         CProxy_Partition* partition = lookup(client);
-        fetch_reply = CcsDelayedReply();
+        fetch_reply[epoch] = CcsDelayReply();
         partition->receive_command(epoch, size, cmd);
     }
 

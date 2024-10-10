@@ -12,33 +12,81 @@
 #include "partition.decl.h"
 
 
-CcsDelayedReply fetch_reply;
+// This needs to have client id in the key
+std::unordered_map<int, CcsDelayedReply> fetch_reply;
 
 
-class TableDataMsg : public CMessage_TableDataMsg
+class BaseTableDataMsg
 {
 public:
     char* data;
     int epoch;
     int size;
 
-    TableDataMsg(int epoch_, int size_)
+    BaseTableDataMsg(int epoch_, int size_)
         : epoch(epoch_)
         , size(size_)
-        , data(nullptr)
     {}
 };
 
 
+class GatherTableDataMsg : public BaseTableDataMsg, public CMessage_GatherTableDataMsg
+{
+public:
+    int num_partitions;
+
+    GatherTableDataMsg(int epoch_, int size_, int num_partitions_)
+        : BaseTableDataMsg(epoch_, size_)
+        , num_partitions(num_partitions_)
+    {}
+};
+
+
+// This should not be a group!
 class Aggregator : public CBase_Aggregator
 {
+private:
+    std::unordered_map<int, int> gather_count;
+    std::unordered_map<int, std::vector<GatherTableDataMsg*>> gather_buffer;
+
 public:
     Aggregator() {}
 
-    void fetch_callback(TableDataMsg* msg)
+    void gather_table(GatherTableDataMsg* msg)
+    {
+        //std::shared_ptr<arrow::Table> table = deserialize(data, size);
+        auto it = gather_count.find(msg->epoch);
+        if (it == gather_count.end())
+            gather_count[msg->epoch] = 1;
+        else
+            gather_count[msg->epoch]++;
+        gather_buffer[msg->epoch].push_back(msg);
+
+        if (gather_count[msg->epoch] == msg->num_partitions)
+        {
+            std::vector<std::shared_ptr<arrow::Table>> gathered_tables;
+            for (int i = 0; i < gather_buffer[msg->epoch].size(); i++)
+            {
+                GatherTableDataMsg* buff_msg = gather_buffer[msg->epoch][i];
+                if (buff_msg->data == nullptr)
+                    continue;
+                gathered_tables.push_back(deserialize(buff_msg->data, buff_msg->size));
+            }
+            //CkPrintf("Received all pieces, size = %i\n", gathered_tables.size());
+            // table is gathered, send to server and reply ccs
+            auto combined_table = arrow::ConcatenateTables(gathered_tables).ValueOrDie();
+            CkPrintf("Gathered table data in aggregator with size = %i\n", combined_table->num_rows());
+            std::shared_ptr<arrow::Buffer> out;
+            serialize(combined_table, out);
+            fetch_callback(msg->epoch, out);
+            // FIXME delete saved msgs and combined_msg here
+        }
+    }
+
+    void fetch_callback(int epoch, std::shared_ptr<arrow::Buffer> &out)
     {
         CkAssert(CkMyPe() == 0);
-        CcsSendDelayedReply(fetch_reply, msg->size, msg->data);
+        CcsSendDelayedReply(fetch_reply[epoch], out->size(), (char*) out->data());
     }
 };
 
@@ -50,9 +98,6 @@ private:
     int num_partitions;
     int EPOCH;
     std::unordered_map<int, std::shared_ptr<arrow::Table>> tables;
-
-    std::unordered_map<int, int> gather_count;
-    std::unordered_map<int, std::vector<TableDataMsg*>> gather_buffer;
 
 public:
     Partition_SDAG_CODE
@@ -90,20 +135,22 @@ public:
             {
                 int table_name = extract<int>(cmd);
                 auto it = tables.find(table_name);
-                TableDataMsg* msg;
+                GatherTableDataMsg* msg;
                 if (it != std::end(tables))
                 {
                     auto table = tables[table_name];
                     std::shared_ptr<arrow::Buffer> out;
                     serialize(table, out);
-                    msg = new (out->size()) TableDataMsg(epoch, out->size());
+                    msg = new (out->size()) GatherTableDataMsg(epoch, out->size(), num_partitions);
                     std::memcpy(msg->data, out->data(), out->size());
                 }
                 else
                 {
-                    msg = new (0) TableDataMsg(epoch, 0);
+                    CkPrintf("Table not found on chare %i\n", thisIndex);
+                    msg = new (0) GatherTableDataMsg(epoch, 0, num_partitions);
+                    msg->data = nullptr;
                 }
-                thisProxy[0].gather_table(msg);
+                agg_proxy[0].gather_table(msg);
                 break;
             }
         
@@ -112,37 +159,6 @@ public:
         }
 
         EPOCH++;
-    }
-
-    void gather_table(TableDataMsg* msg)
-    {
-        //std::shared_ptr<arrow::Table> table = deserialize(data, size);
-        auto it = gather_count.find(msg->epoch);
-        if (it == gather_count.end())
-            gather_count[msg->epoch] = 1;
-        else
-            gather_count[msg->epoch]++;
-        gather_buffer[msg->epoch].push_back(msg);
-
-        if (gather_count[msg->epoch] == num_partitions)
-        {
-            std::vector<std::shared_ptr<arrow::Table>> gathered_tables;
-            for (int i = 0; i < gather_buffer.size(); i++)
-            {
-                TableDataMsg* buff_msg = gather_buffer[msg->epoch][i];
-                if (buff_msg->data == nullptr)
-                    continue;
-                gathered_tables.push_back(deserialize(buff_msg->data, buff_msg->size));
-            }
-            // table is gathered, send to server and reply ccs
-            auto combined_table = arrow::ConcatenateTables(gathered_tables).ValueOrDie();
-            std::shared_ptr<arrow::Buffer> out;
-            serialize(combined_table, out);
-            TableDataMsg* combined_msg = new (out->size()) TableDataMsg(msg->epoch, out->size());
-            std::memcpy(combined_msg->data, out->data(), out->size());
-            agg_proxy[0].fetch_callback(combined_msg);
-            // FIXME delete saved msgs and combined_msg here
-        }
     }
 
     void read_parquet(int table_name, std::string file_path)
