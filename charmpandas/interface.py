@@ -142,9 +142,9 @@ class CCSInterface(Interface):
         gcmd += to_bytes(res, 'i')
 
         gcmd += to_bytes(len(k1), 'i')
-        gcmd += to_bytes(k1.encode('utf-8'), 's')
+        gcmd += to_bytes(k1.encode('utf-8'), '%is' % len(k1))
         gcmd += to_bytes(len(k2), 'i')
-        gcmd += to_bytes(k2.encode('utf-8'), 's')
+        gcmd += to_bytes(k2.encode('utf-8'), '%is' % len(k2))
 
         gcmd += to_bytes(type, 'i')
 
