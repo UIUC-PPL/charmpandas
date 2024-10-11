@@ -21,7 +21,7 @@ server.o: server.cpp server.decl.h server.def.h server.hpp partition.decl.h part
 	$(CHARMC) `pkg-config --cflags --libs arrow` -c $< $(OPTS)
 
 server.out: server.o
-	$(CHARMC) `pkg-config --cflags --libs arrow` -lparquet -language charm++ -o $@ server.o
+	$(CHARMC) `pkg-config --cflags --libs arrow` -lparquet -larrow_acero -language charm++ -o $@ server.o
 
 run-server: server.out
 	LD_LIBRARY_PATH=/home/sb56/anaconda3/envs/charm/lib ./charmrun +p4 ./server.out ++server ++server-port 10000

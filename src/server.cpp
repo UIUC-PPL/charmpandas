@@ -22,8 +22,8 @@ public:
     {
         CcsRegisterHandler("connect", (CmiHandler) Server::connection_handler);
         CcsRegisterHandler("disconnect", (CmiHandler) Server::disconnection_handler);
-        CcsRegisterHandler("read", (CmiHandler) Server::read_handler);
-        CcsRegisterHandler("fetch", (CmiHandler) Server::fetch_handler);
+        CcsRegisterHandler("sync", (CmiHandler) Server::sync_handler);
+        CcsRegisterHandler("async", (CmiHandler) Server::async_handler);
         //CcsRegisterHandler("aum_operation", (CmiHandler) Server::operation_handler);
         //CcsRegisterHandler("aum_sync", (CmiHandler) Server::sync_handler);
         //CcsRegisterHandler("aum_fetch", (CmiHandler) Server::fetch_handler);

@@ -9,6 +9,8 @@
 #include <arrow/compute/api.h>
 #include <parquet/arrow/reader.h>
 #include "arrow/acero/exec_plan.h"
+#include <arrow/acero/options.h>
+#include "arrow/compute/expression.h"
 #include "utils.hpp"
 #include "serialize.hpp"
 #include "partition.decl.h"
@@ -47,21 +49,43 @@ public:
 class JoinTableDataMsg : public BaseTableDataMsg, public CMessage_JoinTableDataMsg
 {
 public:
+    char* left_key;
+    char* right_key;
+    int lkey_size;
+    int rkey_size;
     int table1_name;
     int result_name;
     int join_type;
-    std::string left_key;
-    std::string right_key;
 
     JoinTableDataMsg(int epoch_, int size_, int table1_name_, int result_name_, int join_type_,
-        std::string left_key_, std::string right_key_)
+        int lkey_size_, int rkey_size_)
         : BaseTableDataMsg(epoch_, size_)
         , table1_name(table1_name_)
         , result_name(result_name_)
         , join_type(join_type_)
-        , left_key(left_key_)
-        , right_key(right_key_)
+        , lkey_size(lkey_size_)
+        , rkey_size(rkey_size_)
     {}
+
+    inline std::string get_left_key()
+    {
+        return std::string(left_key, lkey_size);
+    }
+
+    inline std::string get_right_key()
+    {
+        return std::string(right_key, rkey_size);
+    }
+
+    JoinTableDataMsg* copy()
+    {
+        JoinTableDataMsg* msg = new (size, lkey_size, rkey_size) JoinTableDataMsg(
+            epoch, size, table1_name, result_name, join_type, lkey_size, rkey_size);
+        std::memcpy(msg->data, data, size);
+        std::memcpy(msg->left_key, left_key, lkey_size);
+        std::memcpy(msg->right_key, right_key, rkey_size);
+        return msg; 
+    }
 };
 
 
@@ -112,9 +136,9 @@ public:
     {
         gather_count[epoch] = 0;
         GatherTableDataMsg* msg;
-        for (int i = 0; i < gather_buffer.size(); i++)
+        for (int i = 0; i < gather_buffer[epoch].size(); i++)
         {
-            msg = gather_buffer[epoch];
+            msg = gather_buffer[epoch][i];
             delete msg;
         }
         gather_buffer[epoch].clear();
@@ -154,6 +178,126 @@ public:
         // delete tables?
     }
 
+    void operation_read(char* cmd)
+    {
+        int table_name = extract<int>(cmd);
+        int path_size = extract<int>(cmd);
+        std::string file_path(cmd, path_size);
+        CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
+        read_parquet(table_name, file_path);
+        EPOCH++;
+    }
+
+    void operation_fetch(char* cmd)
+    {
+        int table_name = extract<int>(cmd);
+        auto it = tables.find(table_name);
+        GatherTableDataMsg* msg;
+        if (it != std::end(tables))
+        {
+            auto table = tables[table_name];
+            BufferPtr out;
+            serialize(table, out);
+            msg = new (out->size()) GatherTableDataMsg(EPOCH, out->size(), num_partitions);
+            std::memcpy(msg->data, out->data(), out->size());
+        }
+        else
+        {
+            //CkPrintf("Table not found on chare %i\n", thisIndex);
+            msg = new (0) GatherTableDataMsg(EPOCH, 0, num_partitions);
+            msg->data = nullptr;
+        }
+        agg_proxy[0].gather_table(msg);
+        EPOCH++;
+    }
+
+    void operation_join(char* cmd)
+    {
+        int table1 = extract<int>(cmd);
+        int table2 = extract<int>(cmd);
+        int result_name = extract<int>(cmd);
+
+        int lkey_size = extract<int>(cmd);
+        std::string left_key(cmd, lkey_size);
+        cmd += lkey_size;
+
+        int rkey_size = extract<int>(cmd);
+        std::string right_key(cmd, rkey_size);
+        cmd += rkey_size;
+
+        arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(extract<int>(cmd));
+
+        auto it1 = tables.find(table1);
+        auto it2 = tables.find(table2);
+
+        if (it1 != std::end(tables) && it2 != std::end(tables))
+        {
+            // only join locally if both tables are in the chare
+            arrow::acero::HashJoinNodeOptions join_opts{
+                type, {left_key}, {right_key}, arrow::compute::literal(true),
+                "_l", "_r"
+            };
+            local_join(it1->second, it2->second, result_name, join_opts);
+        }
+
+        if (num_partitions > 1)
+        {
+            JoinTableDataMsg* msg;
+            if (it2 != std::end(tables))
+            {
+                BufferPtr out;
+                serialize(it2->second, out);
+                msg = new (out->size(), lkey_size, rkey_size) JoinTableDataMsg(
+                    EPOCH, out->size(), table1, result_name, static_cast<int>(type),
+                    lkey_size, rkey_size);
+                std::memcpy(msg->data, out->data(), out->size());
+                std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
+                std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
+            }
+            else
+            {
+                msg = new (0, lkey_size, rkey_size) JoinTableDataMsg(EPOCH, 0, table1, result_name, 
+                    static_cast<int>(type), lkey_size, rkey_size);
+                msg->data = nullptr;
+                std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
+                std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
+            }
+            thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
+            delete msg;
+        }
+    }
+
+    void operation_print(char* cmd)
+    {
+        int table_name = extract<int>(cmd);
+        auto it = tables.find(table_name);
+        if (it != std::end(tables))
+            CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
+        else
+            CkPrintf("[%d]Table not on this partition\n");
+        EPOCH++;
+    }
+
+    void operation_concat(char* cmd)
+    {
+        int ntables = extract<int>(cmd);
+        std::vector<TablePtr> concat_tables;
+        for (int i = 0; i < ntables; i++)
+        {
+            int table = extract<int>(cmd);
+            auto it = tables.find(table);
+
+            if (it != std::end(tables))
+                concat_tables.push_back(it->second);
+        }
+
+        int result = extract<int>(cmd);
+        if (concat_tables.size() > 0)
+            tables[result] = arrow::ConcatenateTables(concat_tables).ValueOrDie();
+
+        EPOCH++;
+    }
+
     void execute_command(int epoch, int size, char* cmd)
     {
         Operation op = lookup_operation(extract<int>(cmd));
@@ -162,99 +306,32 @@ public:
         {
             case Operation::Read:
             {
-                int table_name = extract<int>(cmd);
-                int path_size = extract<int>(cmd);
-                std::string file_path(cmd, path_size);
-                CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
-                read_parquet(table_name, file_path);
-                EPOCH++;
+                operation_read(cmd);
                 break;
             }
 
             case Operation::Fetch:
             {
-                int table_name = extract<int>(cmd);
-                auto it = tables.find(table_name);
-                GatherTableDataMsg* msg;
-                if (it != std::end(tables))
-                {
-                    auto table = tables[table_name];
-                    BufferPtr out;
-                    serialize(table, out);
-                    msg = new (out->size()) GatherTableDataMsg(epoch, out->size(), num_partitions);
-                    std::memcpy(msg->data, out->data(), out->size());
-                }
-                else
-                {
-                    //CkPrintf("Table not found on chare %i\n", thisIndex);
-                    msg = new (0) GatherTableDataMsg(epoch, 0, num_partitions);
-                    msg->data = nullptr;
-                }
-                agg_proxy[0].gather_table(msg);
-                EPOCH++;
+                operation_fetch(cmd);
                 break;
             }
 
             case Operation::Join:
             {
-                int table1 = extract<int>(cmd);
-                int table2 = extract<int>(cmd);
-                int result_name = extract<int>(cmd);
-
-                int key_size = extract<int>(cmd);
-                std::string left_key(cmd, key_size);
-                cmd += key_size
-
-                key_size = extract<int>(cmd);
-                std::string right_key(cmd, key_size);
-                cmd += key_size;
-
-                arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(extract<int>(cmd));
-
-                auto it1 = tables.find(table1);
-                auto it2 = tables.find(table2);
-
-                if (it1 != std::end(tables) && it2 != std::end(tables))
-                {
-                    // only join locally if both tables are in the chare
-                    arrow::acero::HashJoinNodeOptions join_opts{
-                        type, {left_key}, {right_key}, arrow::compute::literal(true),
-                        "_l", "_r"
-                    };
-                    local_join(it1->second, it2->second, result_name, join_opts);
-                }
-
-                if (num_partitions > 1)
-                {
-                    JoinTableDataMsg* msg;
-                    if (it2 != std::end(tables))
-                    {
-                        BufferPtr out;
-                        serialize(it2->second, out);
-                        msg = new (out->size()) JoinTableDataMsg(
-                            epoch, out->size(), table1, result_name, type,
-                            left_key, right_key);
-                        std::memcpy(msg->data, out->data(), out->size());
-                    }
-                    else
-                    {
-                        msg = new (0) JoinTableDataMsg(epoch, 0, table1, result_name, 
-                            type, left_key, right_key);
-                        msg->data = nullptr;
-                    }
-                    thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
-                }
+                operation_join(cmd);
+                break;
             }
 
             case Operation::Print:
             {
-                int table_name = extract<int>(cmd);
-                auto it = tables.find(table_name);
-                if (it != std::end(tables))
-                    CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
-                else
-                    CkPrintf("[%d]Table not on this partition\n");
-                EPOCH++;
+                operation_print(cmd);
+                break;
+            }
+
+            case Operation::Concat:
+            {
+                operation_concat(cmd);
+                break;
             }
         
             default:
@@ -273,7 +350,7 @@ public:
             {
                 arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(msg->join_type);
                 arrow::acero::HashJoinNodeOptions join_opts{
-                    type, {msg->left_key}, {msg->right_key}, arrow::compute::literal(true),
+                    type, {msg->get_left_key()}, {msg->get_right_key()}, arrow::compute::literal(true),
                     "_l", "_r"
                 };
                 local_join(it1->second, t2, msg->result_name, join_opts);
@@ -288,7 +365,8 @@ public:
         else
         {
             // send t2 forward
-            // TODO create fwd_msg
+            // TODO create fwd_msg - is this copy required?
+            JoinTableDataMsg* fwd_msg = msg->copy();
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(fwd_msg);
         }
     }
@@ -299,16 +377,16 @@ public:
         arrow::acero::Declaration left{"table_source", arrow::acero::TableSourceNodeOptions(t1)};
         arrow::acero::Declaration right{"table_source", arrow::acero::TableSourceNodeOptions(t2)};
 
-        arrow::acero::Declaration hashjoin{"hashjoin", {std::move(left), std::move(right), join_opts}};
+        arrow::acero::Declaration hashjoin{"hashjoin", {std::move(left), std::move(right)}, join_opts};
 
         // Collect the results
         TablePtr result_table;
-        result_table = arrow::acero::DeclarationToTable(std::move(hashjoin));
+        result_table = arrow::acero::DeclarationToTable(std::move(hashjoin)).ValueOrDie();
 
         auto it = tables.find(result_name);
         if (it != std::end(tables))
         {
-            it->second = arrow::ConcatenateTables({it->second, result_table});
+            it->second = arrow::ConcatenateTables({it->second, result_table}).ValueOrDie();
         }
         else
         {

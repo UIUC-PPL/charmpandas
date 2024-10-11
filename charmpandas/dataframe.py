@@ -2,6 +2,8 @@ import sys
 import warnings
 import numpy as np
 
+from charmpandas.interface import lookup_join_type
+
 
 try:
     from typing import final
@@ -86,8 +88,24 @@ class DataFrame(object):
         self.name = get_table_name()
         if isinstance(data, str):
             interface.read_parquet(self.name, data)
+        else:
+            raise NotImplementedError("Only way to create dataframe right now"
+                                      "is to read a parquet file")
 
     def get(self):
         interface = get_interface()
         return interface.fetch_table(self.name)
+    
+    def join(self, other, on, how='left'):
+        interface = get_interface()
+        result_name = get_table_name()
 
+        if isinstance(on, str):
+            k1 = k2 = on
+        elif isinstance(on, list) or isinstance(on, tuple):
+            k1, k2 = on
+
+        join_type = lookup_join_type(how)
+
+        interface.join_tables(self.name, other.name, result_name,
+                              k1, k2, join_type)

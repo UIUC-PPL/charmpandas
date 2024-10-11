@@ -84,7 +84,7 @@ public:
 #endif
     }
 
-    static void read_handler(char* msg)
+    static void async_handler(char* msg)
     {
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         uint8_t client = extract<uint8_t>(cmd);
@@ -94,7 +94,7 @@ public:
         partition->receive_command(epoch, size, cmd);
     }
 
-    static void fetch_handler(char* msg)
+    static void sync_handler(char* msg)
     {
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         uint8_t client = extract<uint8_t>(cmd);

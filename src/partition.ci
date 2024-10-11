@@ -8,13 +8,15 @@ module partition
     message JoinTableDataMsg
     {
         char data[];
+        char left_key[];
+        char right_key[];
     };
 
-    message GroupByReductionMsg
-    {
-        char table[];
-        char options[];
-    };
+    //message GroupByReductionMsg
+    //{
+    //    char table[];
+    //    char options[];
+    //};
 
     group Aggregator
     {
@@ -28,6 +30,8 @@ module partition
         entry Partition(int num_partitions, CProxy_Aggregator agg_proxy);
 
         entry void receive_command(int epoch, int size, char cmd[size]);
+
+        entry [nokeep] void remote_join(JoinTableDataMsg* msg);
 
         entry void start()
         {

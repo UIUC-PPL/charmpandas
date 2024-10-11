@@ -16,7 +16,8 @@ enum class Operation : int
     AddColumn = 2,
     GroupBy = 3,
     Join = 4,
-    Print = 5
+    Print = 5,
+    Concat = 6
 };
 
 template<class T>
