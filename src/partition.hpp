@@ -272,7 +272,8 @@ public:
         int table_name = extract<int>(cmd);
         auto it = tables.find(table_name);
         if (it != std::end(tables))
-            CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
+            //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
+            CkPrintf("[%d] Number of rows in table %i = %i\n", thisIndex, table_name, it->second->num_rows());
         else
             CkPrintf("[%d]Table not on this partition\n");
         EPOCH++;

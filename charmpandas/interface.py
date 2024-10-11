@@ -23,7 +23,8 @@ class Operations(object):
     add_column = 2
     groupby = 3
     join = 4
-    concat = 5
+    print = 5
+    concat = 6
 
 
 # FIXME if this mapping is ever changed in the c++ API
@@ -50,7 +51,7 @@ join_type_map = {'left_semi' : JoinType.left_semi,
 
 
 def lookup_join_type(type_str):
-    return join_type_map.get(type_str, 'error')
+    return join_type_map.get(type_str, -1)
 
 
 class Interface(object):
@@ -93,7 +94,7 @@ class CCSInterface(Interface):
     def __init__(self, server_ip, server_port, odf=4):
         self.server = Server(server_ip, server_port)
         self.server.connect()
-        self.epoch = 0
+        self.epoch = -1
         self.client_id = self.send_command(Handlers.connection_handler, to_bytes(odf, 'i'))
 
     def __del__(self):
@@ -151,6 +152,16 @@ class CCSInterface(Interface):
         cmd += gcmd
         self.send_command_async(Handlers.async_handler, cmd)
 
+    def print_table(self, name):
+        cmd = self.get_header()
+
+        gcmd = to_bytes(Operations.print, 'i')
+        gcmd += to_bytes(name, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+        self.send_command_async(Handlers.async_handler, cmd)
+
     def concat_tables(self, tables, res):
         cmd = self.get_header()
 
@@ -159,7 +170,7 @@ class CCSInterface(Interface):
 
         for t in tables:
             gcmd += to_bytes(t.name, 'i')
-            
+
         gcmd += to_bytes(res, 'i')
 
         cmd += to_bytes(len(gcmd), 'i')
@@ -172,7 +183,6 @@ class CCSInterface(Interface):
         return self.server.receive_response(reply_size)
 
     def send_command(self, handler, msg, reply_size=1, reply_type='B'):
-        self.epoch += 1
         return from_bytes(self.send_command_raw(handler, msg, reply_size), reply_type)
 
     def send_command_async(self, handler, msg):

@@ -86,6 +86,7 @@ public:
 
     static void async_handler(char* msg)
     {
+        CkPrintf("Async handler called\n");
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         uint8_t client = extract<uint8_t>(cmd);
         int epoch = extract<int>(cmd);

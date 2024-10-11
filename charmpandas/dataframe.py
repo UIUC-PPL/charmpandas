@@ -88,6 +88,9 @@ class DataFrame(object):
         self.name = get_table_name()
         if isinstance(data, str):
             interface.read_parquet(self.name, data)
+        elif data == None:
+            # this is a result of some operation
+            pass
         else:
             raise NotImplementedError("Only way to create dataframe right now"
                                       "is to read a parquet file")
@@ -96,9 +99,13 @@ class DataFrame(object):
         interface = get_interface()
         return interface.fetch_table(self.name)
     
-    def join(self, other, on, how='left'):
+    def print(self):
         interface = get_interface()
-        result_name = get_table_name()
+        interface.print_table(self.name)
+    
+    def join(self, other, on, how='inner'):
+        interface = get_interface()
+        result = DataFrame(None)
 
         if isinstance(on, str):
             k1 = k2 = on
@@ -107,5 +114,6 @@ class DataFrame(object):
 
         join_type = lookup_join_type(how)
 
-        interface.join_tables(self.name, other.name, result_name,
+        interface.join_tables(self.name, other.name, result.name,
                               k1, k2, join_type)
+        return result
