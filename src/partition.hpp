@@ -374,7 +374,6 @@ public:
         {
             join_count = 0;
             complete_operation();
-            //CkPrintf("Chare %d completed %d\n", thisIndex, EPOCH);
         }
         else
         {

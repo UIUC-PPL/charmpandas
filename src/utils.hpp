@@ -34,21 +34,4 @@ inline Operation lookup_operation(int opcode)
     return static_cast<Operation>(opcode);
 }
 
-/*void extract_groupby_options(char* msg)
-{
-    // first extract the keys
-    int nkeys = extract<int>(msg);
-    std::vector<std::string> groupby_keys;
-    for (int i = 0; i < nkeys; i++)
-    {
-        int key_size = extract<int>(msg);
-        std::string key(msg, key_size);
-        msg += key_size;
-        groupby_keys.push_back(key);
-    }
-
-    // then extract the aggregations
-
-}*/
-
 #endif

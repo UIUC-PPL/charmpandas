@@ -131,7 +131,7 @@ class CCSInterface(Interface):
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
 
-        return self.send_command(Handlers.sync_handler, cmd, reply_size=8, reply_type='i')
+        return self.send_command(Handlers.sync_handler, cmd, reply_type='i')
 
     def join_tables(self, t1, t2, res, k1, k2, type):
         cmd = self.get_header()
@@ -153,7 +153,6 @@ class CCSInterface(Interface):
         self.send_command_async(Handlers.async_handler, cmd)
 
     def print_table(self, name):
-        print("Epoch = %i" % self.epoch)
         cmd = self.get_header()
 
         gcmd = to_bytes(Operations.print, 'i')
@@ -182,9 +181,17 @@ class CCSInterface(Interface):
         self.epoch += 1
         self.server.send_request(handler, 0, msg)
         return self.server.receive_response(reply_size)
+    
+    def send_command_raw_var(self, handler, msg):
+        self.epoch += 1
+        self.server.send_request(handler, 0, msg)
+        return self.server.receive_response_msg()
 
     def send_command(self, handler, msg, reply_size=1, reply_type='B'):
-        return from_bytes(self.send_command_raw(handler, msg, reply_size), reply_type)
+        if reply_size is None:
+            return from_bytes(self.send_command_raw_var(handler, msg), reply_type)
+        else:
+            return from_bytes(self.send_command_raw(handler, msg, reply_size), reply_type)
 
     def send_command_async(self, handler, msg):
         self.epoch += 1
