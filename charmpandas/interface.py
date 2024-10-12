@@ -153,6 +153,7 @@ class CCSInterface(Interface):
         self.send_command_async(Handlers.async_handler, cmd)
 
     def print_table(self, name):
+        print("Epoch = %i" % self.epoch)
         cmd = self.get_header()
 
         gcmd = to_bytes(Operations.print, 'i')

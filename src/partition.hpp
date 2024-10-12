@@ -265,19 +265,21 @@ public:
                 std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
             }
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
-            delete msg;
         }
     }
 
     void operation_print(char* cmd)
     {
-        int table_name = extract<int>(cmd);
-        auto it = tables.find(table_name);
-        if (it != std::end(tables))
-            //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
-            CkPrintf("[%d] Number of rows in table %i = %i\n", thisIndex, table_name, it->second->num_rows());
-        else
-            CkPrintf("[%d]Table not on this partition\n");
+        if (thisIndex == 0)
+        {
+            int table_name = extract<int>(cmd);
+            auto it = tables.find(table_name);
+            if (it != std::end(tables))
+                //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
+                CkPrintf("[%d] Number of rows in table %i = %i\n", thisIndex, table_name, it->second->num_rows());
+            else
+                CkPrintf("[%d]Table not on this partition\n");
+        }
         EPOCH++;
     }
 
@@ -360,10 +362,11 @@ public:
             }
         }
 
-        if (++join_count == num_partitions)
+        if (++join_count == num_partitions - 1)
         {
             EPOCH++;
             join_count = 0;
+            //CkPrintf("Chare %d completed %d\n", thisIndex, EPOCH);
         }
         else
         {
