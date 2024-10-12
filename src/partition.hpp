@@ -178,6 +178,12 @@ public:
         // delete tables?
     }
 
+    void complete_operation()
+    {
+        EPOCH++;
+        thisProxy[thisIndex].poll();
+    }
+
     void operation_read(char* cmd)
     {
         int table_name = extract<int>(cmd);
@@ -185,7 +191,7 @@ public:
         std::string file_path(cmd, path_size);
         CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
         read_parquet(table_name, file_path);
-        EPOCH++;
+        complete_operation();
     }
 
     void operation_fetch(char* cmd)
@@ -208,7 +214,7 @@ public:
             msg->data = nullptr;
         }
         agg_proxy[0].gather_table(msg);
-        EPOCH++;
+        complete_operation();
     }
 
     void operation_join(char* cmd)
@@ -266,6 +272,8 @@ public:
             }
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
         }
+        else
+            complete_operation();
     }
 
     void operation_print(char* cmd)
@@ -276,11 +284,11 @@ public:
             auto it = tables.find(table_name);
             if (it != std::end(tables))
                 //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
-                CkPrintf("[%d] Number of rows in table %i = %i\n", thisIndex, table_name, it->second->num_rows());
+                CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, it->second->ToString().c_str());
             else
-                CkPrintf("[%d]Table not on this partition\n");
+                CkPrintf("[%d] Table not on this partition\n");
         }
-        EPOCH++;
+        complete_operation();
     }
 
     void operation_concat(char* cmd)
@@ -300,7 +308,7 @@ public:
         if (concat_tables.size() > 0)
             tables[result] = arrow::ConcatenateTables(concat_tables).ValueOrDie();
 
-        EPOCH++;
+        complete_operation();
     }
 
     void execute_command(int epoch, int size, char* cmd)
@@ -364,8 +372,8 @@ public:
 
         if (++join_count == num_partitions - 1)
         {
-            EPOCH++;
             join_count = 0;
+            complete_operation();
             //CkPrintf("Chare %d completed %d\n", thisIndex, EPOCH);
         }
         else

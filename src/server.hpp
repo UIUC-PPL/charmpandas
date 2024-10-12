@@ -70,7 +70,7 @@ public:
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         int odf = extract<int>(cmd);
         CProxy_Partition partition = create_partition(client_id, odf);
-        partition.start();
+        partition.poll();
         CcsSendReply(1, (void*) &client_id);
     }
 

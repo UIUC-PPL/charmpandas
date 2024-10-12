@@ -33,15 +33,12 @@ module partition
 
         entry [nokeep] void remote_join(JoinTableDataMsg* msg);
 
-        entry void start()
+        entry void poll()
         {
-            while (EPOCH > -1)
-            {
-                when receive_command[EPOCH] (int epoch, int size, char cmd[size])
-                    serial "execute command" {
-                        execute_command(epoch, size, cmd);
-                    }
-            }
+            when receive_command[EPOCH] (int epoch, int size, char cmd[size])
+                serial "execute command" {
+                    execute_command(epoch, size, cmd);
+                }
         };
     };
 }
