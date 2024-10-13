@@ -1,3 +1,6 @@
+#ifndef SERIALIZE_H
+#define SERIALIZE_H
+
 #include "arrow/api.h"
 #include "arrow/io/api.h"
 #include "arrow/ipc/api.h"
@@ -42,3 +45,5 @@ TablePtr deserialize(char* data, int size)
 
     return table;
 }
+
+#endif

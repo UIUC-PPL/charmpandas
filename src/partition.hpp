@@ -12,6 +12,7 @@
 #include <arrow/acero/options.h>
 #include "arrow/compute/expression.h"
 #include "utils.hpp"
+#include "reduction.hpp"
 #include "serialize.hpp"
 #include "partition.decl.h"
 
@@ -311,6 +312,56 @@ public:
         complete_operation();
     }
 
+    void operation_groupby(char* cmd)
+    {
+        int table = extract<int>(cmd);
+        int result = extract<int>(cmd);
+        int options_size = extract<int>(cmd);
+        char* options = cmd;
+        arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(cmd);
+        AggregateReductionMsg* red_msg;
+        int red_msg_size;
+
+        auto it = tables.find(table);
+        if (it != std::end(tables))
+        {
+            TablePtr result = local_aggregation(it->second, agg_opts);
+            BufferPtr out;
+            serialize(result, out);
+
+            red_msg = new (out->size(), options_size) AggregateReductionMsg(
+                result, out->size(), options_size
+            );
+            std::memcpy(red_msg->table, out->data(), out->size);
+            std::memcpy(red_msg->options, options, options_size);
+            red_msg_size = 3*sizeof(int) + out->size() + options_size;
+        }
+        else
+        {
+            red_msg = new (0, options_size) AggregateReductionMsg(
+                result, 0, options_size
+            );
+            red_msg->table = nullptr;
+            std::memcpy(red_msg->options, options, options_size);
+            red_msg_size = 3*sizeof(int) + options_size;
+        }
+        CkCallback cb(CkIndex_Partition::aggregate_result(NULL), thisProxy[0]);
+        contribute(red_msg_size, red_msg, AggregateReductionType, cb);
+        
+        // Partition 0 is complete only when the result is written to the tables map
+        if (thisIndex != 0) complete_operation();
+    }
+
+    void aggregate_result(CkReductionMsg* msg)
+    {
+        CkAssert(thisIndex == 0);
+        AggregateReductionMsg* agg_msg = (AggregateReductionMsg*) msg->getData();
+        arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(agg_msg->options);
+        CkAssert(agg_msg->table != nullptr)
+        tables[agg_msg->result_name] = deserialize(agg_msg->table, agg_msg->table_size);
+        complete_operation();
+    }
+
     void execute_command(int epoch, int size, char* cmd)
     {
         Operation op = lookup_operation(extract<int>(cmd));
@@ -344,6 +395,12 @@ public:
             case Operation::Concat:
             {
                 operation_concat(cmd);
+                break;
+            }
+
+            case Operation::GroupBy:
+            {
+                operation_groupby(cmd);
                 break;
             }
         

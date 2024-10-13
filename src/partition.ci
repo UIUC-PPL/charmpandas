@@ -1,5 +1,7 @@
 module partition
 {
+    initproc void register_aggregate_reducer(void);
+
     message GatherTableDataMsg
     {
         char data[];
@@ -12,11 +14,11 @@ module partition
         char right_key[];
     };
 
-    //message GroupByReductionMsg
-    //{
-    //    char table[];
-    //    char options[];
-    //};
+    message AggregateReductionMsg
+    {
+        char table[];
+        char options[];
+    };
 
     group Aggregator
     {
@@ -32,6 +34,8 @@ module partition
         entry void receive_command(int epoch, int size, char cmd[size]);
 
         entry [nokeep] void remote_join(JoinTableDataMsg* msg);
+
+        entry [reductiontarget] void aggregate_result(CkReductionMsg* msg);
 
         entry void poll()
         {
