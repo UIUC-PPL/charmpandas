@@ -27,6 +27,21 @@ class Operations(object):
     concat = 6
 
 
+class GroupByOperations(object):
+    sum = 0
+    count = 1
+
+
+def get_result_field(oper, field):
+    if oper == GroupByOperations.sum:
+        return "sum(%s)" % field
+    elif oper == GroupByOperations.count:
+        return "count(%s)" % field
+
+
+groupby_operations_map = {'sum' : GroupByOperations.sum,
+                          'count' : GroupByOperations.count}
+
 # FIXME if this mapping is ever changed in the c++ API
 # it will mess up the join types
 class JoinType(object):
@@ -52,6 +67,10 @@ join_type_map = {'left_semi' : JoinType.left_semi,
 
 def lookup_join_type(type_str):
     return join_type_map.get(type_str, -1)
+
+
+def lookup_aggregation(agg_fn):
+    return groupby_operations_map.get(agg_fn, -1)
 
 
 class Interface(object):
@@ -108,14 +127,19 @@ class CCSInterface(Interface):
         cmd = to_bytes(self.client_id, 'B')
         cmd += to_bytes(self.epoch, 'i')
         return cmd
+    
+    def string_bytes(self, value):
+        assert(isinstance(value, str))
+        cmd = to_bytes(len(value), 'i')
+        cmd += to_bytes(value.encode('utf-8'), '%is' % len(value))
+        return cmd
 
     def read_parquet(self, table_name, file_path):
         cmd = self.get_header()
         
         gcmd = to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
-        gcmd += to_bytes(len(file_path), 'i')
-        gcmd += to_bytes(file_path.encode('utf-8'), '%is' % len(file_path))
+        gcmd += self.string_bytes(file_path)
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
@@ -141,13 +165,35 @@ class CCSInterface(Interface):
         gcmd += to_bytes(t2, 'i')
         gcmd += to_bytes(res, 'i')
 
-        gcmd += to_bytes(len(k1), 'i')
-        gcmd += to_bytes(k1.encode('utf-8'), '%is' % len(k1))
-        gcmd += to_bytes(len(k2), 'i')
-        gcmd += to_bytes(k2.encode('utf-8'), '%is' % len(k2))
+        gcmd += self.string_bytes(k1)
+        gcmd += self.string_bytes(k2)
 
         gcmd += to_bytes(type, 'i')
 
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+        self.send_command_async(Handlers.async_handler, cmd)
+
+    def groupby(self, table_name, keys, aggs, result_name):
+        cmd = self.get_header()
+
+        gcmd = to_bytes(Operations.groupby, 'i')
+        gcmd += to_bytes(table_name, 'i')
+        gcmd += to_bytes(result_name, 'i')
+
+        opts_cmd = to_bytes(len(keys), 'i')
+        
+        for key in keys:
+            opts_cmd += self.string_bytes(key)
+
+        opts_cmd += to_bytes(len(aggs), 'i')
+        for field, agg_type, result_field in aggs:
+            opts_cmd += to_bytes(agg_type, 'i')
+            opts_cmd += self.string_bytes(field)
+            opts_cmd += self.string_bytes(result_field)
+
+        gcmd += to_bytes(len(opts_cmd), 'i')
+        gcmd += opts_cmd
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
         self.send_command_async(Handlers.async_handler, cmd)

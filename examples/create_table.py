@@ -8,6 +8,6 @@ df2 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/table2.parq
 
 #df3 = pd.concat([df1, df2])
 
-df3 = df1.join(df2, 'first_name')
+df3 = df2.groupby(["first_name"])["ids"].sum()
 
 df3.print()

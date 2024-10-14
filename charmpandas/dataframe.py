@@ -2,7 +2,8 @@ import sys
 import warnings
 import numpy as np
 
-from charmpandas.interface import lookup_join_type
+from charmpandas.interface import lookup_join_type, lookup_aggregation, \
+    get_result_field, GroupByOperations
 
 
 try:
@@ -82,6 +83,66 @@ class Field(object):
         return self * (1 / other)
 
 
+class DataFrameGroupByField(object):
+    def __init__(self, df_groupby, field):
+        self.df_groupby = df_groupby
+        self.field = field
+
+    def sum(self):
+        return self.df_groupby.execute([(self.field, GroupByOperations.sum, 
+                                         get_result_field(GroupByOperations.sum, self.field))])
+    
+    def count(self):
+        return self.df_groupby.execute([(self.field, GroupByOperations.count,
+                                         get_result_field(GroupByOperations.count, self.field))])
+    
+    def aggregate(self, agg_fn):
+        if not isinstance(agg_fn, str):
+            raise ValueError("Invalid aggregation operation")
+        return self.df_groupby.execute({self.field, lookup_aggregation(agg_fn)})
+
+
+class DataFrameGroupBy(object):
+    def __init__(self, df, by):
+        self.df = df
+        self.by = by
+
+    def __getitem__(self, field):
+        return DataFrameGroupByField(self, field)
+
+    def execute(self, aggs):
+        interface = get_interface()
+        result = DataFrame(None)
+        interface.groupby(self.df.name, self.by, aggs, result.name)
+        return result
+    
+    def sum(self):
+        raise NotImplementedError("Groupby requires specifying target columns"
+                                  "for now")
+        #return self.execute({GroupByOperations.sum})
+    
+    def count(self):
+        raise NotImplementedError("Groupby requires specifying target columns"
+                                  "for now")
+        #return self.execute(GroupByOperations.count)
+    
+    def aggregate(self, aggs):
+        agg_list = []
+        if isinstance(aggs, str):
+            raise NotImplementedError("Groupby requires specifying target columns"
+                                    "for now")
+        elif isinstance(aggs, dict):
+            for field, opers in aggs:
+                if isinstance(opers, list):
+                    for oper in opers:
+                        agg_type = lookup_aggregation(oper)
+                        agg_list.append((field, agg_type, get_result_field(agg_type, field)))
+                else:
+                    agg_type = lookup_aggregation(opers)
+                    agg_list.append((field, agg_type, get_result_field(agg_type, field)))
+            return self.execute(aggs)
+
+
 class DataFrame(object):
     def __init__(self, data):
         interface = get_interface()
@@ -117,3 +178,6 @@ class DataFrame(object):
         interface.join_tables(self.name, other.name, result.name,
                               k1, k2, join_type)
         return result
+
+    def groupby(self, by):
+        return DataFrameGroupBy(self, by)

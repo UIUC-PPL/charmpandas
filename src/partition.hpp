@@ -283,9 +283,13 @@ public:
         {
             int table_name = extract<int>(cmd);
             auto it = tables.find(table_name);
+            std::stringstream ss;
             if (it != std::end(tables))
+            {
+                arrow::PrettyPrint(*it->second, {}, &ss);
+                CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, ss.str().c_str());
+            }
                 //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
-                CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, it->second->ToString().c_str());
             else
                 CkPrintf("[%d] Table not on this partition\n");
         }
@@ -315,10 +319,10 @@ public:
     void operation_groupby(char* cmd)
     {
         int table = extract<int>(cmd);
-        int result = extract<int>(cmd);
+        int result_name = extract<int>(cmd);
         int options_size = extract<int>(cmd);
         char* options = cmd;
-        arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(cmd);
+        arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(cmd, true);
         AggregateReductionMsg* red_msg;
         int red_msg_size;
 
@@ -330,16 +334,16 @@ public:
             serialize(result, out);
 
             red_msg = new (out->size(), options_size) AggregateReductionMsg(
-                result, out->size(), options_size
+                result_name, out->size(), options_size
             );
-            std::memcpy(red_msg->table, out->data(), out->size);
+            std::memcpy(red_msg->table, out->data(), out->size());
             std::memcpy(red_msg->options, options, options_size);
             red_msg_size = 3*sizeof(int) + out->size() + options_size;
         }
         else
         {
             red_msg = new (0, options_size) AggregateReductionMsg(
-                result, 0, options_size
+                result_name, 0, options_size
             );
             red_msg->table = nullptr;
             std::memcpy(red_msg->options, options, options_size);
@@ -357,7 +361,7 @@ public:
         CkAssert(thisIndex == 0);
         AggregateReductionMsg* agg_msg = (AggregateReductionMsg*) msg->getData();
         arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(agg_msg->options);
-        CkAssert(agg_msg->table != nullptr)
+        CkAssert(agg_msg->table != nullptr);
         tables[agg_msg->result_name] = deserialize(agg_msg->table, agg_msg->table_size);
         complete_operation();
     }

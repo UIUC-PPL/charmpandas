@@ -10,7 +10,7 @@
 #include <arrow/acero/options.h>
 #include "utils.hpp"
 #include "serialize.hpp"
-#include "partition.decl.h"
+#include "reduction.decl.h"
 
 CkReduction::reducerType AggregateReductionType;
 
@@ -80,7 +80,7 @@ std::string get_aggregation_function(AggregateOperation op)
     }
 }
 
-arrow::acero::AggregateNodeOptions extract_aggregate_options(char* msg)
+arrow::acero::AggregateNodeOptions extract_aggregate_options(char* msg, bool is_local=false)
 {
     // first extract the keys
     int nkeys = extract<int>(msg);
@@ -107,7 +107,8 @@ arrow::acero::AggregateNodeOptions extract_aggregate_options(char* msg)
         int result_size = extract<int>(msg);
         std::string result_field(msg, result_size);
         msg += result_size;
-        aggs.push_back({agg_fn, nullptr, target_field, result_field});
+        CkPrintf("agg_fn = %s, target = %s, result = %s\n", agg_fn.c_str(), target_field.c_str(), result_field.c_str());
+        aggs.push_back({agg_fn, nullptr, is_local ? target_field : result_field, result_field});
     }
 
     return arrow::acero::AggregateNodeOptions{aggs, keys};
@@ -123,22 +124,34 @@ TablePtr local_aggregation(TablePtr &table, arrow::acero::AggregateNodeOptions &
 CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
 {
     std::vector<TablePtr> reduction_tables;
+
+    CkPrintf("PE = %i, nmsgs = %i\n", CkMyPe(), nmsgs);
     
     for (int i = 0; i < nmsgs; i++)
     {
         AggregateReductionMsg* msg = (AggregateReductionMsg*) msgs[i]->getData();
+        CkPrintf("Extracting options on PE %i msg %i\n", CkMyPe(), i);
         arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(msg->options);
+        CkPrintf("Calling deserialize on PE %i, msg %i\n", CkMyPe(), i);
         if (msg->table != nullptr)
             reduction_tables.push_back(deserialize(msg->table, msg->table_size));
+        CkPrintf("Done deserialization on PE %i, msg %i\n", CkMyPe(), i);
     }
 
     AggregateReductionMsg* msg = (AggregateReductionMsg*) msgs[0]->getData();
+    CkPrintf("Options ptr before = %p\n", msg->options);
     arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(msg->options);
+    CkPrintf("Options ptr after = %p\n", msg->options);
 
     if (reduction_tables.size() > 0)
     {
+        //CkPrintf("Deserialization done on PE %i\n", CkMyPe());
         TablePtr combined_table = arrow::ConcatenateTables(reduction_tables).ValueOrDie();
+
         TablePtr result = local_aggregation(combined_table, agg_opts);
+
+        //CkPrintf("Groupby result %i ->\n%s\n%s\n", CkMyPe(), combined_table->schema()->ToString().c_str(), 
+        //    result->schema()->ToString().c_str());
         
         BufferPtr out;
         serialize(result, out);
@@ -148,6 +161,9 @@ CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
         );
         std::memcpy(next_msg->table, out->data(), out->size());
         std::memcpy(next_msg->options, msg->options, msg->options_size);
+
+        //CkPrintf("TEST\n");
+        //arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(next_msg->options);
 
         return CkReductionMsg::buildNew(3*sizeof(int) + out->size() + msg->options_size, next_msg);
     }
@@ -167,5 +183,5 @@ void register_aggregate_reducer()
     AggregateReductionType = CkReduction::addReducer(aggregate_reducer);
 }
 
-#include "partition.def.h"
+#include "reduction.def.h"
 #endif

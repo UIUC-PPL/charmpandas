@@ -17,11 +17,17 @@ partition.decl.h: partition.ci partition.hpp
 
 partition.def.h: partition.ci partition.hpp
 
-server.o: server.cpp server.decl.h server.def.h server.hpp partition.decl.h partition.def.h partition.hpp utils.hpp serialize.hpp reduction.hpp
+reduction.decl.h: reduction.ci reduction.hpp
+	$(CHARMC) -E reduction.ci
+
+reduction.def.h: reduction.ci reduction.hpp
+
+server.o: server.cpp server.decl.h server.def.h server.hpp partition.decl.h partition.def.h \
+	reduction.decl.h reduction.def.h partition.hpp utils.hpp serialize.hpp reduction.hpp
 	$(CHARMC) `pkg-config --cflags --libs arrow` -c $< $(OPTS)
 
 server.out: server.o
-	$(CHARMC) `pkg-config --cflags --libs arrow` -lparquet -larrow_acero -language charm++ -o $@ server.o
+	$(CHARMC) `pkg-config --cflags --libs arrow` -g -lparquet -larrow_acero -language charm++ -o $@ server.o
 
 run-server: server.out
 	LD_LIBRARY_PATH=/home/sb56/anaconda3/envs/charm/lib ./charmrun +p4 ./server.out ++server ++server-port 10000

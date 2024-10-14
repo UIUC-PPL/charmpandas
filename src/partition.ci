@@ -1,6 +1,6 @@
 module partition
 {
-    initproc void register_aggregate_reducer(void);
+    extern module reduction;
 
     message GatherTableDataMsg
     {
@@ -12,12 +12,6 @@ module partition
         char data[];
         char left_key[];
         char right_key[];
-    };
-
-    message AggregateReductionMsg
-    {
-        char table[];
-        char options[];
     };
 
     group Aggregator
