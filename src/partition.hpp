@@ -116,7 +116,7 @@ public:
             for (int i = 0; i < gather_buffer[msg->epoch].size(); i++)
             {
                 GatherTableDataMsg* buff_msg = gather_buffer[msg->epoch][i];
-                if (buff_msg->data == nullptr)
+                if (buff_msg->size == 0)
                     continue;
                 gathered_tables.push_back(deserialize(buff_msg->data, buff_msg->size));
             }
@@ -212,7 +212,6 @@ public:
         {
             //CkPrintf("Table not found on chare %i\n", thisIndex);
             msg = new (0) GatherTableDataMsg(EPOCH, 0, num_partitions);
-            msg->data = nullptr;
         }
         agg_proxy[0].gather_table(msg);
         complete_operation();

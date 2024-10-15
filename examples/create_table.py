@@ -12,4 +12,6 @@ df3 = df2.groupby(["first_name"])["ids"].count()
 
 df4 = df1.join(df3, "first_name")
 
-df4.print()
+x = df4.get()
+
+print(x)

@@ -1,4 +1,5 @@
 import struct
+import pyarrow as pa
 from pyccs import Server
 
 
@@ -6,8 +7,17 @@ def to_bytes(value, dtype='I'):
     return struct.pack(dtype, value)
 
 
+def pandas_from_bytes(bvalue):
+    buffer = pa.py_buffer(bvalue)
+    reader = pa.ipc.open_stream(buffer)
+    return reader.read_all().to_pandas()
+
+
 def from_bytes(bvalue, dtype='I'):
-    return struct.unpack(dtype, bvalue)[0]
+    if dtype == 'table':
+        return pandas_from_bytes(bvalue)
+    else:
+        return struct.unpack(dtype, bvalue)[0]
 
 
 class Handlers(object):
@@ -114,7 +124,8 @@ class CCSInterface(Interface):
         self.server = Server(server_ip, server_port)
         self.server.connect()
         self.epoch = -1
-        self.client_id = self.send_command(Handlers.connection_handler, to_bytes(odf, 'i'))
+        self.client_id = self.send_command(Handlers.connection_handler, 
+                                           to_bytes(odf, 'i'), reply_size=1)
 
     def __del__(self):
         self.disconnect()
@@ -155,7 +166,7 @@ class CCSInterface(Interface):
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
 
-        return self.send_command(Handlers.sync_handler, cmd, reply_type='i')
+        return self.send_command(Handlers.sync_handler, cmd, reply_type='table')
 
     def join_tables(self, t1, t2, res, k1, k2, type):
         cmd = self.get_header()
@@ -233,7 +244,7 @@ class CCSInterface(Interface):
         self.server.send_request(handler, 0, msg)
         return self.server.receive_response_msg()
 
-    def send_command(self, handler, msg, reply_size=1, reply_type='B'):
+    def send_command(self, handler, msg, reply_size=None, reply_type='B'):
         if reply_size is None:
             return from_bytes(self.send_command_raw_var(handler, msg), reply_type)
         else:
