@@ -10,4 +10,6 @@ df2 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/table2.parq
 
 df3 = df2.groupby(["first_name"])["ids"].count()
 
-df3.print()
+df4 = df1.join(df3, "first_name")
+
+df4.print()

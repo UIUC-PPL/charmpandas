@@ -232,8 +232,6 @@ public:
         std::string right_key(cmd, rkey_size);
         cmd += rkey_size;
 
-        //CkPrintf("Joining on keys, %s, %s\n", left_key.c_str(), right_key.c_str());
-
         arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(extract<int>(cmd));
 
         auto it1 = tables.find(table1);
@@ -411,7 +409,7 @@ public:
 
     void remote_join(JoinTableDataMsg* msg)
     {
-        if (msg->data != nullptr)
+        if (msg->size != 0)
         {
             TablePtr t2 = deserialize(msg->data, msg->size);
             
