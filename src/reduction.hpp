@@ -14,11 +14,9 @@
 
 CkReduction::reducerType AggregateReductionType;
 
-class AggregateReductionMsg : public CMessage_AggregateReductionMsg
+class AggregateReductionMsg
 {
 public:
-    char* table;
-    char* options;
     int result_name;
     int table_size;
     int options_size;
@@ -28,7 +26,33 @@ public:
         , table_size(table_size_)
         , options_size(options_size_)
     {}
+
+    inline char* get_options()
+    {
+        return reinterpret_cast<char*>((char*) this + sizeof(AggregateReductionMsg));
+    }
+
+    inline char* get_table()
+    {
+        return reinterpret_cast<char*>((char*) this + sizeof(AggregateReductionMsg) + options_size);
+    }
 };
+
+AggregateReductionMsg* create_reduction_msg(int result_name, int table_size, char* table, 
+    int options_size, char* options)
+{
+    int total_size = sizeof(AggregateReductionMsg) + table_size + options_size;
+    void* buffer = ::operator new(total_size);
+    AggregateReductionMsg* msg = new (buffer) AggregateReductionMsg(result_name, table_size, options_size);
+    char* msg_options = reinterpret_cast<char*>(buffer + sizeof(AggregateReductionMsg));
+    if (table_size > 0)
+    {
+        char* msg_table = reinterpret_cast<char*>(buffer + sizeof(AggregateReductionMsg) + options_size);
+        std::memcpy(msg_table, table, table_size);
+    }
+    std::memcpy(msg_options, options, options_size);
+    return msg;
+}
 
 enum class AggregateOperation : int
 {
@@ -107,7 +131,6 @@ arrow::acero::AggregateNodeOptions extract_aggregate_options(char* msg, bool is_
         int result_size = extract<int>(msg);
         std::string result_field(msg, result_size);
         msg += result_size;
-        CkPrintf("agg_fn = %s, target = %s, result = %s\n", agg_fn.c_str(), target_field.c_str(), result_field.c_str());
         aggs.push_back({agg_fn, nullptr, is_local ? target_field : result_field, result_field});
     }
 
@@ -124,57 +147,39 @@ TablePtr local_aggregation(TablePtr &table, arrow::acero::AggregateNodeOptions &
 CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
 {
     std::vector<TablePtr> reduction_tables;
-
-    CkPrintf("PE = %i, nmsgs = %i\n", CkMyPe(), nmsgs);
     
     for (int i = 0; i < nmsgs; i++)
     {
         AggregateReductionMsg* msg = (AggregateReductionMsg*) msgs[i]->getData();
-        CkPrintf("Extracting options on PE %i msg %i\n", CkMyPe(), i);
-        arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(msg->options);
-        CkPrintf("Calling deserialize on PE %i, msg %i\n", CkMyPe(), i);
-        if (msg->table != nullptr)
-            reduction_tables.push_back(deserialize(msg->table, msg->table_size));
-        CkPrintf("Done deserialization on PE %i, msg %i\n", CkMyPe(), i);
+        arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(msg->get_options());
+        if (msg->table_size != 0)
+            reduction_tables.push_back(deserialize(msg->get_table(), msg->table_size));
     }
 
     AggregateReductionMsg* msg = (AggregateReductionMsg*) msgs[0]->getData();
-    CkPrintf("Options ptr before = %p\n", msg->options);
-    arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(msg->options);
-    CkPrintf("Options ptr after = %p\n", msg->options);
+    arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(msg->get_options());
 
     if (reduction_tables.size() > 0)
     {
-        //CkPrintf("Deserialization done on PE %i\n", CkMyPe());
         TablePtr combined_table = arrow::ConcatenateTables(reduction_tables).ValueOrDie();
 
         TablePtr result = local_aggregation(combined_table, agg_opts);
 
-        //CkPrintf("Groupby result %i ->\n%s\n%s\n", CkMyPe(), combined_table->schema()->ToString().c_str(), 
-        //    result->schema()->ToString().c_str());
-        
         BufferPtr out;
         serialize(result, out);
 
-        AggregateReductionMsg* next_msg = new (out->size(), msg->options_size) AggregateReductionMsg(
-            msg->result_name, out->size(), msg->options_size
+        AggregateReductionMsg* next_msg = create_reduction_msg(
+            msg->result_name, out->size(), (char*) out->data(), msg->options_size, msg->get_options()
         );
-        std::memcpy(next_msg->table, out->data(), out->size());
-        std::memcpy(next_msg->options, msg->options, msg->options_size);
 
-        //CkPrintf("TEST\n");
-        //arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(next_msg->options);
-
-        return CkReductionMsg::buildNew(3*sizeof(int) + out->size() + msg->options_size, next_msg);
+        return CkReductionMsg::buildNew(sizeof(AggregateReductionMsg) + out->size() + msg->options_size, next_msg);
     }
     else
     {
-        AggregateReductionMsg* next_msg = new (0, msg->options_size) AggregateReductionMsg(
-            msg->result_name, 0, msg->options_size
+        AggregateReductionMsg* next_msg = create_reduction_msg(
+            msg->result_name, 0, nullptr, msg->options_size, msg->get_options()
         );
-        next_msg->table = nullptr;
-        std::memcpy(next_msg->options, msg->options, msg->options_size);
-        return CkReductionMsg::buildNew(3*sizeof(int) + msg->options_size, next_msg);
+        return CkReductionMsg::buildNew(sizeof(AggregateReductionMsg) + msg->options_size, next_msg);
     }
 }
 
