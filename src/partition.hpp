@@ -57,15 +57,17 @@ public:
     int table1_name;
     int result_name;
     int join_type;
+    int fwd_count;
 
     JoinTableDataMsg(int epoch_, int size_, int table1_name_, int result_name_, int join_type_,
-        int lkey_size_, int rkey_size_)
+        int lkey_size_, int rkey_size_, int fwd_count_)
         : BaseTableDataMsg(epoch_, size_)
         , table1_name(table1_name_)
         , result_name(result_name_)
         , join_type(join_type_)
         , lkey_size(lkey_size_)
         , rkey_size(rkey_size_)
+        , fwd_count(fwd_count_)
     {}
 
     inline std::string get_left_key()
@@ -81,7 +83,8 @@ public:
     JoinTableDataMsg* copy()
     {
         JoinTableDataMsg* msg = new (size, lkey_size, rkey_size) JoinTableDataMsg(
-            epoch, size, table1_name, result_name, join_type, lkey_size, rkey_size);
+            epoch, size, table1_name, result_name, join_type, lkey_size, rkey_size,
+            fwd_count + 1);
         std::memcpy(msg->data, data, size);
         std::memcpy(msg->left_key, left_key, lkey_size);
         std::memcpy(msg->right_key, right_key, rkey_size);
@@ -160,6 +163,7 @@ private:
     int num_partitions;
     int EPOCH;
     int join_count;
+    bool local_join_done;
     std::unordered_map<int, TablePtr> tables;
 
 public:
@@ -170,6 +174,7 @@ public:
         , agg_proxy(agg_proxy_)
         , EPOCH(0)
         , join_count(0)
+        , local_join_done(false)
     {}
 
     Partition(CkMigrateMessage* m) {}
@@ -255,7 +260,7 @@ public:
                 serialize(it2->second, out);
                 msg = new (out->size(), lkey_size, rkey_size) JoinTableDataMsg(
                     EPOCH, out->size(), table1, result_name, static_cast<int>(type),
-                    lkey_size, rkey_size);
+                    lkey_size, rkey_size, 1);
                 std::memcpy(msg->data, out->data(), out->size());
                 std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
                 std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
@@ -263,12 +268,18 @@ public:
             else
             {
                 msg = new (0, lkey_size, rkey_size) JoinTableDataMsg(EPOCH, 0, table1, result_name, 
-                    static_cast<int>(type), lkey_size, rkey_size);
-                msg->data = nullptr;
+                    static_cast<int>(type), lkey_size, rkey_size, 1);
                 std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
                 std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
             }
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
+            local_join_done = true;
+            if (join_count == num_partitions - 1)
+            {
+                join_count = 0;
+                local_join_done = false;
+                complete_operation();
+            }
         }
         else
             complete_operation();
@@ -276,7 +287,7 @@ public:
 
     void operation_print(char* cmd)
     {
-        if (thisIndex == 0)
+        //if (thisIndex == 0)
         {
             int table_name = extract<int>(cmd);
             auto it = tables.find(table_name);
@@ -284,7 +295,8 @@ public:
             if (it != std::end(tables))
             {
                 arrow::PrettyPrint(*it->second, {}, &ss);
-                CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, ss.str().c_str());
+                //CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, ss.str().c_str());
+                CkPrintf("[%d] Table: %i: %i\n", thisIndex, table_name, it->second->num_rows());
             }
                 //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
             else
@@ -424,12 +436,16 @@ public:
             }
         }
 
-        if (++join_count == num_partitions - 1)
+        ++join_count;
+        
+        if (local_join_done && join_count == num_partitions - 1)
         {
             join_count = 0;
+            local_join_done = false;
             complete_operation();
         }
-        else
+        
+        if (msg->fwd_count < num_partitions - 1)
         {
             // send t2 forward
             // TODO create fwd_msg - is this copy required?

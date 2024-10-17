@@ -242,7 +242,9 @@ class CCSInterface(Interface):
     def send_command_raw_var(self, handler, msg):
         self.epoch += 1
         self.server.send_request(handler, 0, msg)
-        return self.server.receive_response_msg()
+        res = self.server.receive_response_msg()
+        print(res)
+        return res
 
     def send_command(self, handler, msg, reply_size=None, reply_type='B'):
         if reply_size is None:
