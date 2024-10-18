@@ -29,6 +29,14 @@ module partition
 
         entry [nokeep] void remote_join(JoinTableDataMsg* msg);
 
+        entry void listen_remote_join()
+        {
+            when remote_join[EPOCH] (JoinTableDataMsg* msg)
+                serial "remote join" {
+                    process_remote_join(msg);
+                }
+        }
+
         entry [reductiontarget] void aggregate_result(CkReductionMsg* msg);
 
         entry void poll()

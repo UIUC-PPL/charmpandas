@@ -272,14 +272,10 @@ public:
                 std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
                 std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
             }
+            CkSetRefNum(msg, EPOCH);
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
-            local_join_done = true;
-            if (join_count == num_partitions - 1)
-            {
-                join_count = 0;
-                local_join_done = false;
-                complete_operation();
-            }
+            // FIXME this isn't optimal because remote joins can only happen after local
+            thisProxy[thisIndex].listen_remote_join();
         }
         else
             complete_operation();
@@ -418,12 +414,13 @@ public:
         }
     }
 
-    void remote_join(JoinTableDataMsg* msg)
+    void process_remote_join(JoinTableDataMsg* msg)
     {
         if (msg->size != 0)
         {
             TablePtr t2 = deserialize(msg->data, msg->size);
-            
+            //if (thisIndex == 0)
+            //    CkPrintf("Received msg on %i, %i, %i\n", thisIndex, join_count, t2->num_rows());   
             auto it1 = tables.find(msg->table1_name);
             if (it1 != std::end(tables))
             {
@@ -435,14 +432,16 @@ public:
                 local_join(it1->second, t2, msg->result_name, join_opts);
             }
         }
-
-        ++join_count;
         
-        if (local_join_done && join_count == num_partitions - 1)
+        if ((++join_count == num_partitions - 1))
         {
             join_count = 0;
             local_join_done = false;
             complete_operation();
+        }
+        else
+        {
+            thisProxy[thisIndex].listen_remote_join();
         }
         
         if (msg->fwd_count < num_partitions - 1)
@@ -450,6 +449,7 @@ public:
             // send t2 forward
             // TODO create fwd_msg - is this copy required?
             JoinTableDataMsg* fwd_msg = msg->copy();
+            CkSetRefNum(fwd_msg, EPOCH);
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(fwd_msg);
         }
     }

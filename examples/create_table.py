@@ -1,7 +1,7 @@
 import charmpandas as pd
 from charmpandas.interface import CCSInterface
 
-pd.set_interface(CCSInterface("100.115.92.204", 1234, odf=3))
+pd.set_interface(CCSInterface("100.115.92.204", 1234, odf=4))
 
 df1 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/table1.parquet")
 df2 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/table2.parquet")
@@ -10,7 +10,7 @@ df2 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/table2.parq
 
 df3 = df2.groupby(["first_name"])["ids"].count()
 
-df4 = df1.join(df3, "first_name")
+df4 = df3.join(df1, "first_name")
 
 df4.print()
 
