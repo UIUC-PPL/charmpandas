@@ -10,8 +10,10 @@ module partition
     message JoinTableDataMsg
     {
         char data[];
-        char left_key[];
-        char right_key[];
+        char left_keys[];
+        char right_keys[];
+        int lkey_sizes[];
+        int rkey_sizes[];
     };
 
     group Aggregator

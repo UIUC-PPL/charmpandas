@@ -169,9 +169,11 @@ class DataFrame(object):
         result = DataFrame(None)
 
         if isinstance(on, str):
+            k1 = k2 = [on]
+        elif isinstance(on, list):
             k1 = k2 = on
-        elif isinstance(on, list) or isinstance(on, tuple):
-            k1, k2 = on
+        else:
+            raise ValueError("Join keys have to be a list")
 
         join_type = lookup_join_type(how)
 

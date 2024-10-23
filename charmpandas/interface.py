@@ -168,7 +168,7 @@ class CCSInterface(Interface):
 
         return self.send_command(Handlers.sync_handler, cmd, reply_type='table')
 
-    def join_tables(self, t1, t2, res, k1, k2, type):
+    def join_tables(self, t1, t2, res, k1_list, k2_list, type):
         cmd = self.get_header()
 
         gcmd = to_bytes(Operations.join, 'i')
@@ -176,8 +176,10 @@ class CCSInterface(Interface):
         gcmd += to_bytes(t2, 'i')
         gcmd += to_bytes(res, 'i')
 
-        gcmd += self.string_bytes(k1)
-        gcmd += self.string_bytes(k2)
+        gcmd += to_bytes(len(k1_list), 'i')
+        for k1, k2 in zip(k1_list, k2_list):
+            gcmd += self.string_bytes(k1)
+            gcmd += self.string_bytes(k2)
 
         gcmd += to_bytes(type, 'i')
 

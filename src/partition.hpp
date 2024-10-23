@@ -50,45 +50,88 @@ public:
 class JoinTableDataMsg : public BaseTableDataMsg, public CMessage_JoinTableDataMsg
 {
 public:
-    char* left_key;
-    char* right_key;
-    int lkey_size;
-    int rkey_size;
+    char* left_keys;
+    char* right_keys;
+    int* lkey_sizes;
+    int* rkey_sizes;
+    int nkeys;
     int table1_name;
     int result_name;
     int join_type;
     int fwd_count;
 
     JoinTableDataMsg(int epoch_, int size_, int table1_name_, int result_name_, int join_type_,
-        int lkey_size_, int rkey_size_, int fwd_count_)
+        int nkeys_, int fwd_count_)
         : BaseTableDataMsg(epoch_, size_)
         , table1_name(table1_name_)
         , result_name(result_name_)
         , join_type(join_type_)
-        , lkey_size(lkey_size_)
-        , rkey_size(rkey_size_)
+        , nkeys(nkeys_)
         , fwd_count(fwd_count_)
     {}
 
-    inline std::string get_left_key()
+    inline std::vector<arrow::FieldRef> get_left_keys()
     {
-        return std::string(left_key, lkey_size);
+        std::vector<arrow::FieldRef> keys;
+        int offset = 0;
+        for (int i = 0; i < nkeys; i++)
+        {
+            int lkey_size = lkey_sizes[i];
+            keys.push_back(arrow::FieldRef(std::string(left_keys + offset, lkey_size)));
+            offset += lkey_size;
+        }
+        return keys;
     }
 
-    inline std::string get_right_key()
+    inline std::vector<arrow::FieldRef> get_right_keys()
     {
-        return std::string(right_key, rkey_size);
+        std::vector<arrow::FieldRef> keys;
+        int offset = 0;
+        for (int i = 0; i < nkeys; i++)
+        {
+            int rkey_size = rkey_sizes[i];
+            keys.push_back(arrow::FieldRef(std::string(right_keys + offset, rkey_size)));
+            offset += rkey_size;
+        }
+        return keys;
+    }
+
+    static void pack(JoinTableDataMsg* msg, char* data_, std::vector<arrow::FieldRef> &left_keys_, 
+        std::vector<arrow::FieldRef> &right_keys_, int* lkey_sizes_, int* rkey_sizes_)
+    {
+        if (data_ != nullptr)
+            std::memcpy(msg->data, data_, msg->size);
+        int left_offset = 0, right_offset = 0;
+        std::memcpy(msg->lkey_sizes, lkey_sizes_, msg->nkeys * sizeof(int));
+        std::memcpy(msg->rkey_sizes, rkey_sizes_, msg->nkeys * sizeof(int));
+        for (int i = 0; i < msg->nkeys; i++)
+        {
+            std::memcpy(msg->left_keys + left_offset, left_keys_[i].name()->c_str(), lkey_sizes_[i]);
+            std::memcpy(msg->right_keys + right_offset, right_keys_[i].name()->c_str(), rkey_sizes_[i]);
+            left_offset += lkey_sizes_[i];
+            right_offset += rkey_sizes_[i];
+        }
     }
 
     JoinTableDataMsg* copy()
     {
-        JoinTableDataMsg* msg = new (size, lkey_size, rkey_size) JoinTableDataMsg(
-            epoch, size, table1_name, result_name, join_type, lkey_size, rkey_size,
-            fwd_count + 1);
+        int total_lsize = 0, total_rsize = 0;
+        for (int i = 0; i < nkeys; i++)
+        {
+            total_lsize += lkey_sizes[i];
+            total_rsize += rkey_sizes[i];
+        }
+
+        JoinTableDataMsg* msg = new (size, total_lsize, total_rsize, nkeys * sizeof(int), 
+            nkeys * sizeof(int)) JoinTableDataMsg(epoch, size, table1_name, result_name, join_type,
+            nkeys, fwd_count + 1);
+
         std::memcpy(msg->data, data, size);
-        std::memcpy(msg->left_key, left_key, lkey_size);
-        std::memcpy(msg->right_key, right_key, rkey_size);
-        return msg; 
+        std::memcpy(msg->left_keys, left_keys, total_lsize);
+        std::memcpy(msg->right_keys, right_keys, total_rsize);
+        std::memcpy(msg->lkey_sizes, lkey_sizes, nkeys * sizeof(int));
+        std::memcpy(msg->rkey_sizes, rkey_sizes, nkeys * sizeof(int));
+        return msg;
     }
 };
 
@@ -227,14 +270,28 @@ public:
         int table1 = extract<int>(cmd);
         int table2 = extract<int>(cmd);
         int result_name = extract<int>(cmd);
+        int nkeys = extract<int>(cmd);
 
-        int lkey_size = extract<int>(cmd);
-        std::string left_key(cmd, lkey_size);
-        cmd += lkey_size;
+        std::vector<arrow::FieldRef> left_keys, right_keys;
+        std::vector<int> lkey_sizes, rkey_sizes;
+        int total_lsize = 0, total_rsize = 0;
+        for (int i = 0; i < nkeys; i++)
+        {
+            int lkey_size = extract<int>(cmd);
+            left_keys.push_back(arrow::FieldRef(std::string(cmd, lkey_size)));
+            lkey_sizes.push_back(lkey_size);
+            cmd += lkey_size;
+            total_lsize += lkey_size;
 
-        int rkey_size = extract<int>(cmd);
-        std::string right_key(cmd, rkey_size);
-        cmd += rkey_size;
+            int rkey_size = extract<int>(cmd);
+            right_keys.push_back(arrow::FieldRef(std::string(cmd, rkey_size)));
+            rkey_sizes.push_back(rkey_size);
+            cmd += rkey_size;
+            total_rsize += rkey_size;
+        }
+
+        //CkPrintf("%s, %s\n", left_keys[0].name()->c_str(), left_keys[1].name()->c_str());
+        //CkPrintf("%s, %s\n", right_keys[0].name()->c_str(), right_keys[1].name()->c_str());
 
         arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(extract<int>(cmd));
 
@@ -245,7 +302,7 @@ public:
         {
             // only join locally if both tables are in the chare
             arrow::acero::HashJoinNodeOptions join_opts{
-                type, {left_key}, {right_key}, arrow::compute::literal(true),
+                type, left_keys, right_keys, arrow::compute::literal(true),
                 "_l", "_r"
             };
             local_join(it1->second, it2->second, result_name, join_opts);
@@ -258,19 +315,20 @@ public:
             {
                 BufferPtr out;
                 serialize(it2->second, out);
-                msg = new (out->size(), lkey_size, rkey_size) JoinTableDataMsg(
+                msg = new (out->size(), total_lsize, total_rsize, nkeys * sizeof(int), 
+                    nkeys * sizeof(int)) JoinTableDataMsg(
                     EPOCH, out->size(), table1, result_name, static_cast<int>(type),
-                    lkey_size, rkey_size, 1);
-                std::memcpy(msg->data, out->data(), out->size());
-                std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
-                std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
+                    nkeys, 1);
+                JoinTableDataMsg::pack(msg, (char*) out->data(), left_keys, right_keys, lkey_sizes.data(), 
+                    rkey_sizes.data());
             }
             else
             {
-                msg = new (0, lkey_size, rkey_size) JoinTableDataMsg(EPOCH, 0, table1, result_name, 
-                    static_cast<int>(type), lkey_size, rkey_size, 1);
-                std::memcpy(msg->left_key, left_key.c_str(), lkey_size);
-                std::memcpy(msg->right_key, right_key.c_str(), rkey_size);
+                msg = new (0, total_lsize, total_rsize, nkeys * sizeof(int), 
+                    nkeys * sizeof(int)) JoinTableDataMsg(
+                    EPOCH, 0, table1, result_name, static_cast<int>(type),
+                    nkeys, 1);
+                JoinTableDataMsg::pack(msg, nullptr, left_keys, right_keys, lkey_sizes.data(), rkey_sizes.data());
             }
             CkSetRefNum(msg, EPOCH);
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
@@ -283,7 +341,7 @@ public:
 
     void operation_print(char* cmd)
     {
-        //if (thisIndex == 0)
+        if (thisIndex == 0)
         {
             int table_name = extract<int>(cmd);
             auto it = tables.find(table_name);
@@ -291,8 +349,8 @@ public:
             if (it != std::end(tables))
             {
                 arrow::PrettyPrint(*it->second, {}, &ss);
-                //CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, ss.str().c_str());
-                CkPrintf("[%d] Table: %i: %i\n", thisIndex, table_name, it->second->num_rows());
+                CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, ss.str().c_str());
+                //CkPrintf("[%d] Table: %i: %i\n", thisIndex, table_name, it->second->num_rows());
             }
                 //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
             else
@@ -420,20 +478,20 @@ public:
         {
             TablePtr t2 = deserialize(msg->data, msg->size);
             //if (thisIndex == 0)
-            //    CkPrintf("Received msg on %i, %i, %i\n", thisIndex, join_count, t2->num_rows());   
+            //CkPrintf("Received msg on %i, %i, %i\n", thisIndex, join_count, t2->num_rows());   
             auto it1 = tables.find(msg->table1_name);
             if (it1 != std::end(tables))
             {
                 arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(msg->join_type);
                 arrow::acero::HashJoinNodeOptions join_opts{
-                    type, {msg->get_left_key()}, {msg->get_right_key()}, arrow::compute::literal(true),
+                    type, msg->get_left_keys(), msg->get_right_keys(), arrow::compute::literal(true),
                     "_l", "_r"
                 };
                 local_join(it1->second, t2, msg->result_name, join_opts);
             }
         }
         
-        if ((++join_count == num_partitions - 1))
+        if (++join_count == num_partitions - 1)
         {
             join_count = 0;
             local_join_done = false;
@@ -463,8 +521,7 @@ public:
         arrow::acero::Declaration hashjoin{"hashjoin", {std::move(left), std::move(right)}, join_opts};
 
         // Collect the results
-        TablePtr result_table;
-        result_table = arrow::acero::DeclarationToTable(std::move(hashjoin)).ValueOrDie();
+        TablePtr result_table = arrow::acero::DeclarationToTable(std::move(hashjoin)).ValueOrDie();
 
         auto it = tables.find(result_name);
         if (it != std::end(tables))
