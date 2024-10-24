@@ -6,6 +6,11 @@ from pyccs import Server
 def to_bytes(value, dtype='I'):
     return struct.pack(dtype, value)
 
+def string_bytes(value):
+    assert(isinstance(value, str))
+    cmd = to_bytes(len(value), 'i')
+    cmd += to_bytes(value.encode('utf-8'), '%is' % len(value))
+    return cmd
 
 def pandas_from_bytes(bvalue):
     buffer = pa.py_buffer(bvalue)
@@ -30,7 +35,7 @@ class Handlers(object):
 class Operations(object):
     read = 0
     fetch = 1
-    add_column = 2
+    set_column = 2
     groupby = 3
     join = 4
     print = 5
@@ -138,19 +143,13 @@ class CCSInterface(Interface):
         cmd = to_bytes(self.client_id, 'B')
         cmd += to_bytes(self.epoch, 'i')
         return cmd
-    
-    def string_bytes(self, value):
-        assert(isinstance(value, str))
-        cmd = to_bytes(len(value), 'i')
-        cmd += to_bytes(value.encode('utf-8'), '%is' % len(value))
-        return cmd
 
     def read_parquet(self, table_name, file_path):
         cmd = self.get_header()
         
         gcmd = to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
-        gcmd += self.string_bytes(file_path)
+        gcmd += string_bytes(file_path)
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
@@ -178,10 +177,22 @@ class CCSInterface(Interface):
 
         gcmd += to_bytes(len(k1_list), 'i')
         for k1, k2 in zip(k1_list, k2_list):
-            gcmd += self.string_bytes(k1)
-            gcmd += self.string_bytes(k2)
+            gcmd += string_bytes(k1)
+            gcmd += string_bytes(k2)
 
         gcmd += to_bytes(type, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+        self.send_command_async(Handlers.async_handler, cmd)
+
+    def set_column(self, table_name, field, rhs):
+        cmd = self.get_header()
+
+        gcmd = to_bytes(Operations.set_column, 'i')
+        gcmd += to_bytes(table_name, 'i')
+        gcmd += string_bytes(field)
+        gcmd += rhs.graph.identifier
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
@@ -197,13 +208,13 @@ class CCSInterface(Interface):
         opts_cmd = to_bytes(len(keys), 'i')
         
         for key in keys:
-            opts_cmd += self.string_bytes(key)
+            opts_cmd += string_bytes(key)
 
         opts_cmd += to_bytes(len(aggs), 'i')
         for field, agg_type, result_field in aggs:
             opts_cmd += to_bytes(agg_type, 'i')
-            opts_cmd += self.string_bytes(field)
-            opts_cmd += self.string_bytes(result_field)
+            opts_cmd += string_bytes(field)
+            opts_cmd += string_bytes(result_field)
 
         gcmd += to_bytes(len(opts_cmd), 'i')
         gcmd += opts_cmd

@@ -8,10 +8,13 @@ df2 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/test2.parqu
 
 #df3 = pd.concat([df1, df2])
 
-df3 = df1.groupby(["first_name", "last_name"])["ids"].count()
+#df3 = df1.groupby(["first_name", "last_name"])["ids"].count()
 
-df4 = df2.join(df3, ["first_name", "last_name"])
+#df4 = df2.join(df3, ["first_name", "last_name"])
 
-df4.print()
+df1["test"] = df1["ids"] + 2 * df2["age"]
+df2["test"] = 2. * df1["test"]
+
+df2.print()
 
 #print(x)

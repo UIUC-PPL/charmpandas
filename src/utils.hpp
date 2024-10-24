@@ -5,15 +5,19 @@
 #include <arrow/status.h>
 #include <arrow/api.h>
 #include <arrow/table.h>
+#include <arrow/scalar.h>
 
 using TablePtr = std::shared_ptr<arrow::Table>;
+using ArrayPtr = std::shared_ptr<arrow::Array>;
+using ScalarPtr = std::shared_ptr<arrow::Scalar>;
+using ChunkedArrayPtr = std::shared_ptr<arrow::ChunkedArray>;
 using BufferPtr = std::shared_ptr<arrow::Buffer>;
 
 enum class Operation : int
 {
     Read = 0,
     Fetch = 1,
-    AddColumn = 2,
+    SetColumn = 2,
     GroupBy = 3,
     Join = 4,
     Print = 5,

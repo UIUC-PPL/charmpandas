@@ -6,12 +6,14 @@
 #include <arrow/status.h>
 #include <arrow/api.h>
 #include <arrow/table.h>
+#include <arrow/scalar.h>
 #include <arrow/compute/api.h>
 #include <parquet/arrow/reader.h>
 #include "arrow/acero/exec_plan.h"
 #include <arrow/acero/options.h>
 #include "arrow/compute/expression.h"
 #include "utils.hpp"
+#include "operations.hpp"
 #include "reduction.hpp"
 #include "serialize.hpp"
 #include "partition.decl.h"
@@ -415,6 +417,20 @@ public:
         if (thisIndex != 0) complete_operation();
     }
 
+    void operation_set_column(char* cmd)
+    {
+        int table_name = extract<int>(cmd);
+        int field_size = extract<int>(cmd);
+        auto it = tables.find(table_name);
+        if (it == std::end(tables))
+            CkAbort("This table doesn't exist");
+        std::string field_name(cmd, field_size);
+        cmd += field_size;
+        arrow::Datum result = traverse_ast(cmd);
+        tables[table_name] = set_column(it->second, field_name, result);
+        complete_operation();
+    }
+
     void aggregate_result(CkReductionMsg* msg)
     {
         CkAssert(thisIndex == 0);
@@ -464,6 +480,12 @@ public:
             case Operation::GroupBy:
             {
                 operation_groupby(cmd);
+                break;
+            }
+
+            case Operation::SetColumn:
+            {
+                operation_set_column(cmd);
                 break;
             }
         
@@ -531,6 +553,75 @@ public:
         else
         {
             tables[result_name] = result_table;
+        }
+    }
+
+    arrow::Datum extract_operand(char* &msg)
+    {
+        OperandType operand_type = static_cast<OperandType>(extract<int>(msg));
+
+        switch (operand_type)
+        {
+            case OperandType::Field:
+            {
+                int table_name = extract<int>(msg);
+                int field_size = extract<int>(msg);
+                std::string field_name(msg, field_size);
+                msg += field_size;
+                auto it = tables.find(table_name);
+                if (it == std::end(tables))
+                    CkAbort("Table not found\n");
+                return arrow::Datum(it->second->GetColumnByName(field_name));
+            }
+
+            case OperandType::Integer:
+            {
+                int value = extract<int>(msg);
+                ScalarPtr scalar = std::make_shared<arrow::Int64Scalar>(value);
+                return arrow::Datum(scalar);
+            }
+
+            case OperandType::Double:
+            {
+                double value = extract<double>(msg);
+                ScalarPtr scalar = std::make_shared<arrow::DoubleScalar>(value);
+                return arrow::Datum(scalar);
+            }
+            
+            default:
+                break;
+        }
+    }
+
+    arrow::Datum traverse_ast(char* &msg)
+    {
+        ArrayOperation opcode = static_cast<ArrayOperation>(extract<int>(msg));
+
+        switch (opcode)
+        {
+            case ArrayOperation::Noop:
+            {
+                return extract_operand(msg);
+            }
+
+            case ArrayOperation::Add:
+            {
+                std::vector<arrow::Datum> operands;
+                operands.push_back(traverse_ast(msg));
+                operands.push_back(traverse_ast(msg));
+                return execute_operation(ArrayOperation::Add, operands);
+            }
+
+            case ArrayOperation::Multiply:
+            {
+                std::vector<arrow::Datum> operands;
+                operands.push_back(traverse_ast(msg));
+                operands.push_back(traverse_ast(msg));
+                return execute_operation(ArrayOperation::Multiply, operands);
+            }
+            
+            default:
+                break;
         }
     }
 
