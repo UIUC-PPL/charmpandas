@@ -628,6 +628,12 @@ public:
             case ArrayOperation::Sub:
             case ArrayOperation::Multiply:
             case ArrayOperation::Divide:
+            case ArrayOperation::LessThan:
+            case ArrayOperation::LessEqual:
+            case ArrayOperation::GreaterThan:
+            case ArrayOperation::GreaterEqual:
+            case ArrayOperation::Equal:
+            case ArrayOperation::NotEqual:
             {
                 std::vector<arrow::Datum> operands;
                 operands.push_back(traverse_ast(msg));
