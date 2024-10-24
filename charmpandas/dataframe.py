@@ -120,7 +120,8 @@ class DataFrameField(object):
         return self * other
 
     def __div__(self, other):
-        return self * (1 / other)
+        node = FieldOperationNode(ArrayOperations.divide, [self, other])
+        return DataFrameField(self.df, graph=node)
 
 
 class DataFrame(object):

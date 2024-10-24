@@ -11,7 +11,9 @@ enum class ArrayOperation : int
 {
     Noop = 0,
     Add = 1,
-    Multiply = 2
+    Sub = 2,
+    Multiply = 3,
+    Divide = 4
 };
 
 enum class OperandType : int
@@ -28,8 +30,14 @@ std::string get_array_operation(ArrayOperation op)
         case ArrayOperation::Add:
             return "add";
 
+        case ArrayOperation::Sub:
+            return "subtract";
+
         case ArrayOperation::Multiply:
             return "multiply";
+
+        case ArrayOperation::Divide:
+            return "divide";
         
         default:
             return "noop";

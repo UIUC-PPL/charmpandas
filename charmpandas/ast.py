@@ -11,8 +11,9 @@ class OperandTypes(object):
 class ArrayOperations(object):
     noop = 0
     add = 1
-    multiply = 2
-    sub = 3
+    sub = 2
+    multiply = 3
+    divide = 4
 
 
 class FieldOperationNode(object):

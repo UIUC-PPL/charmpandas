@@ -422,12 +422,13 @@ public:
         int table_name = extract<int>(cmd);
         int field_size = extract<int>(cmd);
         auto it = tables.find(table_name);
-        if (it == std::end(tables))
-            CkAbort("This table doesn't exist");
-        std::string field_name(cmd, field_size);
-        cmd += field_size;
-        arrow::Datum result = traverse_ast(cmd);
-        tables[table_name] = set_column(it->second, field_name, result);
+        if (it != std::end(tables))
+        {
+            std::string field_name(cmd, field_size);
+            cmd += field_size;
+            arrow::Datum result = traverse_ast(cmd);
+            tables[table_name] = set_column(it->second, field_name, result);
+        }
         complete_operation();
     }
 
@@ -605,19 +606,14 @@ public:
             }
 
             case ArrayOperation::Add:
-            {
-                std::vector<arrow::Datum> operands;
-                operands.push_back(traverse_ast(msg));
-                operands.push_back(traverse_ast(msg));
-                return execute_operation(ArrayOperation::Add, operands);
-            }
-
+            case ArrayOperation::Sub:
             case ArrayOperation::Multiply:
+            case ArrayOperation::Divide:
             {
                 std::vector<arrow::Datum> operands;
                 operands.push_back(traverse_ast(msg));
                 operands.push_back(traverse_ast(msg));
-                return execute_operation(ArrayOperation::Multiply, operands);
+                return execute_operation(opcode, operands);
             }
             
             default:
