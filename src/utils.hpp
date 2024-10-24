@@ -21,7 +21,8 @@ enum class Operation : int
     GroupBy = 3,
     Join = 4,
     Print = 5,
-    Concat = 6
+    Concat = 6,
+    Filter = 7
 };
 
 template<class T>

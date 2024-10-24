@@ -104,24 +104,42 @@ class DataFrameField(object):
         else:
             self.graph = graph
 
-    def __add__(self, other):
-        node = FieldOperationNode(ArrayOperations.add, [self, other])
+    def binary_op(self, other, op):
+        node = FieldOperationNode(op, [self, other])
         return DataFrameField(self.df, graph=node)
+
+    def __add__(self, other):
+        return self.binary_op(other, ArrayOperations.add)
 
     def __sub__(self, other):
-        node = FieldOperationNode(ArrayOperations.sub, [self, other])
-        return DataFrameField(self.df, graph=node)
+        return self.binary_op(other, ArrayOperations.sub)
 
     def __mul__(self, other):
-        node = FieldOperationNode(ArrayOperations.multiply, [self, other])
-        return DataFrameField(self.df, graph=node)
+        return self.binary_op(other, ArrayOperations.multiply)
 
     def __rmul__(self, other):
         return self * other
 
     def __div__(self, other):
-        node = FieldOperationNode(ArrayOperations.divide, [self, other])
-        return DataFrameField(self.df, graph=node)
+        return self.binary_op(other, ArrayOperations.divide)
+    
+    def __lt__(self, other):
+        return self.binary_op(other, ArrayOperations.less_than)
+
+    def __le__(self, other):
+        return self.binary_op(other, ArrayOperations.less_equal)
+    
+    def __gt__(self, other):
+        return self.binary_op(other, ArrayOperations.greater_than)
+    
+    def __ge__(self, other):
+        return self.binary_op(other, ArrayOperations.greater_equal)
+    
+    def __eq__(self, other):
+        return self.binary_op(other, ArrayOperations.equal)
+    
+    def __ne__(self, other):
+        return self.binary_op(other, ArrayOperations.not_equal)
 
 
 class DataFrame(object):
@@ -137,8 +155,14 @@ class DataFrame(object):
             raise NotImplementedError("Only way to create dataframe right now"
                                       "is to read a parquet file")
         
-    def __getitem__(self, field):
-        return DataFrameField(self, field=field)
+    def __getitem__(self, rhs):
+        if isinstance(rhs, str):
+            return DataFrameField(self, field=rhs)
+        elif isinstance(rhs, DataFrameField):
+            interface = get_interface()
+            result = DataFrame(None)
+            interface.filter(self.name, rhs, result)
+            return result
     
     def __setitem__(self, field, data):
         interface = get_interface()

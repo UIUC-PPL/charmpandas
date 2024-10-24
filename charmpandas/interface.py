@@ -40,6 +40,7 @@ class Operations(object):
     join = 4
     print = 5
     concat = 6
+    filter = 7
 
 
 class GroupByOperations(object):
@@ -192,6 +193,18 @@ class CCSInterface(Interface):
         gcmd = to_bytes(Operations.set_column, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += string_bytes(field)
+        gcmd += rhs.graph.identifier
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+        self.send_command_async(Handlers.async_handler, cmd)
+
+    def filter(self, table_name, rhs, result):
+        cmd = self.get_header()
+
+        gcmd = to_bytes(Operations.filter, 'i')
+        gcmd += to_bytes(table_name, 'i')
+        gcmd += to_bytes(result.name, 'i')
         gcmd += rhs.graph.identifier
 
         cmd += to_bytes(len(gcmd), 'i')

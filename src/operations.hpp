@@ -13,7 +13,13 @@ enum class ArrayOperation : int
     Add = 1,
     Sub = 2,
     Multiply = 3,
-    Divide = 4
+    Divide = 4,
+    LessThan = 5,
+    LessEqual = 6,
+    GreaterThan = 7,
+    GreaterEqual = 8,
+    Equal = 9,
+    NotEqual = 10
 };
 
 enum class OperandType : int
@@ -38,6 +44,24 @@ std::string get_array_operation(ArrayOperation op)
 
         case ArrayOperation::Divide:
             return "divide";
+
+        case ArrayOperation::LessThan:
+            return "less";
+
+        case ArrayOperation::LessEqual:
+            return "less_equal";
+
+        case ArrayOperation::GreaterThan:
+            return "greater";
+
+        case ArrayOperation::GreaterEqual:
+            return "greater_equal";
+
+        case ArrayOperation::Equal:
+            return "equal";
+
+        case ArrayOperation::NotEqual:
+            return "not_equal";
         
         default:
             return "noop";

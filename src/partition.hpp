@@ -432,6 +432,19 @@ public:
         complete_operation();
     }
 
+    void operation_filter(char* cmd)
+    {
+        int table_name = extract<int>(cmd);
+        int result_table = extract<int>(cmd);
+        auto it = tables.find(table_name);
+        if (it != std::end(tables))
+        {
+            arrow::Datum condition = traverse_ast(cmd);
+            tables[result_table] = arrow::compute::Filter(it->second, condition).ValueOrDie().table();
+        }
+        complete_operation();
+    }
+
     void aggregate_result(CkReductionMsg* msg)
     {
         CkAssert(thisIndex == 0);
@@ -487,6 +500,12 @@ public:
             case Operation::SetColumn:
             {
                 operation_set_column(cmd);
+                break;
+            }
+
+            case Operation::Filter:
+            {
+                operation_filter(cmd);
                 break;
             }
         

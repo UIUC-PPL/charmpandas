@@ -14,6 +14,12 @@ class ArrayOperations(object):
     sub = 2
     multiply = 3
     divide = 4
+    less_than = 5
+    less_equal = 6
+    greater_than = 7
+    greater_equal = 8
+    equal = 9
+    not_equal = 10
 
 
 class FieldOperationNode(object):
