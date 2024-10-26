@@ -98,7 +98,7 @@ public:
         return keys;
     }
 
-    static void pack(JoinTableDataMsg* msg, char* data_, std::vector<arrow::FieldRef> &left_keys_, 
+    static void pack_message(JoinTableDataMsg* msg, char* data_, std::vector<arrow::FieldRef> &left_keys_, 
         std::vector<arrow::FieldRef> &right_keys_, int* lkey_sizes_, int* rkey_sizes_)
     {
         if (data_ != nullptr)
@@ -321,7 +321,7 @@ public:
                     nkeys * sizeof(int)) JoinTableDataMsg(
                     EPOCH, out->size(), table1, result_name, static_cast<int>(type),
                     nkeys, 1);
-                JoinTableDataMsg::pack(msg, (char*) out->data(), left_keys, right_keys, lkey_sizes.data(), 
+                JoinTableDataMsg::pack_message(msg, (char*) out->data(), left_keys, right_keys, lkey_sizes.data(), 
                     rkey_sizes.data());
             }
             else
@@ -330,7 +330,7 @@ public:
                     nkeys * sizeof(int)) JoinTableDataMsg(
                     EPOCH, 0, table1, result_name, static_cast<int>(type),
                     nkeys, 1);
-                JoinTableDataMsg::pack(msg, nullptr, left_keys, right_keys, lkey_sizes.data(), rkey_sizes.data());
+                JoinTableDataMsg::pack_message(msg, nullptr, left_keys, right_keys, lkey_sizes.data(), rkey_sizes.data());
             }
             CkSetRefNum(msg, EPOCH);
             thisProxy[(thisIndex + 1) % num_partitions].remote_join(msg);
@@ -609,7 +609,7 @@ public:
             }
             
             default:
-                break;
+                return arrow::Datum();
         }
     }
 
@@ -642,7 +642,7 @@ public:
             }
             
             default:
-                break;
+                return arrow::Datum();
         }
     }
 

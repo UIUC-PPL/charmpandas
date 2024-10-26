@@ -101,6 +101,9 @@ std::string get_aggregation_function(AggregateOperation op)
 
         case AggregateOperation::HashFirstLast:
             return "hash_first_last";
+
+        default:
+            return "error";
     }
 }
 
