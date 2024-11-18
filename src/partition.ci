@@ -25,7 +25,7 @@ module partition
 
     array [1D] Partition
     {
-        entry Partition(int num_partitions, CProxy_Aggregator agg_proxy);
+        entry Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy);
 
         entry void receive_command(int epoch, int size, char cmd[size]);
 

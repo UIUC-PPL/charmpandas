@@ -126,12 +126,14 @@ class DebugInterface(Interface):
     
 
 class CCSInterface(Interface):
-    def __init__(self, server_ip, server_port, odf=4):
+    def __init__(self, server_ip, server_port, odf=4, lb_period=5):
         self.server = Server(server_ip, server_port)
         self.server.connect()
         self.epoch = -1
+        cmd = to_bytes(odf, 'i')
+        cmd += to_bytes(lb_period, 'i')
         self.client_id = self.send_command(Handlers.connection_handler, 
-                                           to_bytes(odf, 'i'), reply_size=1)
+                                           cmd, reply_size=1)
 
     def __del__(self):
         self.disconnect()

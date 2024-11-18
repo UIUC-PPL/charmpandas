@@ -69,7 +69,8 @@ public:
         uint8_t client_id = get_client_id();
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         int odf = extract<int>(cmd);
-        CProxy_Partition partition = create_partition(client_id, odf);
+        int lb_period = extract<int>(cmd);
+        CProxy_Partition partition = create_partition(client_id, odf, lb_period);
         partition.poll();
         CcsSendReply(1, (void*) &client_id);
     }
@@ -111,7 +112,7 @@ public:
         CkExit();
     }
 
-    static CProxy_Partition create_partition(uint8_t client, int odf)
+    static CProxy_Partition create_partition(uint8_t client, int odf, int lb_period)
     {
     
         uint32_t total_chares = odf * CkNumPes();
@@ -121,7 +122,7 @@ public:
                 client, total_chares);
 #endif
 
-        CProxy_Partition new_partition = CProxy_Partition::ckNew(total_chares, agg_proxy, total_chares);
+        CProxy_Partition new_partition = CProxy_Partition::ckNew(total_chares, lb_period, agg_proxy, total_chares);
         insert(client, new_partition);
         return new_partition;
     }
