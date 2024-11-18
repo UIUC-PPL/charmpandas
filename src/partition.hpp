@@ -209,29 +209,104 @@ private:
     int EPOCH;
     int join_count;
     bool local_join_done;
+    int lb_period;
     std::unordered_map<int, TablePtr> tables;
+    std::unordered_map<int, BufferPtr> tables_serialized;
 
 public:
     Partition_SDAG_CODE
 
-    Partition(int num_partitions_, CProxy_Aggregator agg_proxy_) 
+    Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_) 
         : num_partitions(num_partitions_)
         , agg_proxy(agg_proxy_)
         , EPOCH(0)
         , join_count(0)
         , local_join_done(false)
-    {}
+        , lb_period(lb_period_)
+    {
+        usesAtSync = true;
+    }
 
-    Partition(CkMigrateMessage* m) {}
+    Partition(CkMigrateMessage* m) 
+        : CBase_Partition(m)
+    {
+        usesAtSync = true;
+    }
 
     ~Partition()
     {
         // delete tables?
+        tables.clear();
+        tables_serialized.clear();
+    }
+
+    void pup(PUP::er &p)
+    {
+        p | agg_proxy;
+        p | num_partitions;
+        p | EPOCH;
+        p | join_count;
+        p | local_join_done;
+        p | lb_period;
+        pup_tables(p);
+    }
+
+    void pup_tables(PUP::er &p)
+    {
+        int num_tables;
+        if (!p.isUnpacking())
+            num_tables = tables.size();
+        p | num_tables;
+
+        std::unordered_map<int, TablePtr>::iterator it;
+        if (!p.isUnpacking())
+            it = tables.begin();
+        for (int i = 0; i < num_tables; i++)
+        {
+            int table_name, serialized_size;
+            if (!p.isUnpacking())
+            {
+                table_name = it->first;
+                auto it_serial = tables_serialized.find(table_name);
+                if (it_serial == std::end(tables_serialized))
+                    serialize_and_cache(table_name);
+                serialized_size = tables_serialized[table_name]->size();
+                //CkPrintf("Serialized table %i with size %i\n", table_name, serialized_size);
+                p | table_name;
+                p | serialized_size;
+                p((char*) tables_serialized[table_name]->data(), serialized_size);
+                ++it;
+            }
+            else
+            {
+                p | table_name;
+                p | serialized_size;
+                //CkPrintf("Deserialized table %i with size %i\n", table_name, serialized_size);
+                char* buf = new char[serialized_size];
+                p(buf, serialized_size);
+                tables[table_name] = deserialize(buf, serialized_size);
+                // TODO: try to see what happens if I delete the buf
+            }
+        }
+    }
+
+    void serialize_and_cache(int table_name)
+    {
+        BufferPtr out;
+        serialize(tables[table_name], out);
+        tables_serialized[table_name] = out;
     }
 
     void complete_operation()
     {
-        EPOCH++;
+        if (++EPOCH % lb_period == 0)
+            AtSync();
+        else
+            thisProxy[thisIndex].poll();
+    }
+
+    void ResumeFromSync()
+    {
         thisProxy[thisIndex].poll();
     }
 
