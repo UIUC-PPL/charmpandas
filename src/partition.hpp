@@ -148,6 +148,10 @@ private:
 public:
     Aggregator() {}
 
+    Aggregator(CkMigrateMessage* m) : CBase_Aggregator(m) {}
+
+    void pup(PUP::er &p) {}
+
     void gather_table(GatherTableDataMsg* msg)
     {
         //TablePtr table = deserialize(data, size);
@@ -231,6 +235,8 @@ public:
         : CBase_Partition(m)
     {
         usesAtSync = true;
+        //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
+        //thisProxy[thisIndex].poll();
     }
 
     ~Partition()
@@ -249,6 +255,11 @@ public:
         p | local_join_done;
         p | lb_period;
         pup_tables(p);
+        if (p.isUnpacking())
+        {
+            CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
+            thisProxy[thisIndex].poll();
+        }
     }
 
     void pup_tables(PUP::er &p)
@@ -276,6 +287,9 @@ public:
                 p | serialized_size;
                 p((char*) tables_serialized[table_name]->data(), serialized_size);
                 ++it;
+
+                if (p.isPacking())
+                    tables_serialized.erase(table_name);
             }
             else
             {
@@ -286,8 +300,39 @@ public:
                 p(buf, serialized_size);
                 tables[table_name] = deserialize(buf, serialized_size);
                 // TODO: try to see what happens if I delete the buf
+                // Answer: Do not delete buf!
             }
         }
+    }
+
+    int64_t calculate_memory_usage()
+    {
+        int total_size = 0;
+        for (auto &it: tables)
+        {
+            total_size += calculate_memory_usage(it.second);
+        }
+        return total_size;
+    }
+
+    int64_t calculate_memory_usage(TablePtr table)
+    {
+        int64_t total_size = 0;
+    
+        for (int i = 0; i < table->num_columns(); ++i) 
+        {
+            auto column = table->column(i);
+            for (int j = 0; j < column->num_chunks(); ++j) 
+            {
+                auto chunk = column->chunk(j);
+                for (const auto& buffer : chunk->data()->buffers) 
+                {
+                    if (buffer)
+                        total_size += buffer->size();
+                }
+            }
+        }
+        return total_size;
     }
 
     void serialize_and_cache(int table_name)
@@ -299,14 +344,13 @@ public:
 
     void complete_operation()
     {
-        if (++EPOCH % lb_period == 0)
-            AtSync();
-        else
-            thisProxy[thisIndex].poll();
+        ++EPOCH;
+        thisProxy[thisIndex].poll();
     }
 
     void ResumeFromSync()
     {
+        //CkPrintf("Resume called\n");
         thisProxy[thisIndex].poll();
     }
 
@@ -583,10 +627,20 @@ public:
                 operation_filter(cmd);
                 break;
             }
+
+            case Operation::Rescale:
+            {
+                //CkPrintf("Rescale\n");
+                ++EPOCH;
+                AtSync();
+                break;
+            }
         
             default:
                 break;
         }
+
+        CkPrintf("Chare %i> Memory usage = %f MB\n", thisIndex, ((double) calculate_memory_usage()) / (1024 * 1024));
     }
 
     void process_remote_join(JoinTableDataMsg* msg)

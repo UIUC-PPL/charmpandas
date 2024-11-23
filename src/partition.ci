@@ -16,7 +16,7 @@ module partition
         int rkey_sizes[];
     };
 
-    group Aggregator
+    group [migratable] Aggregator
     {
         entry Aggregator();
 

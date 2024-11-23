@@ -22,7 +22,8 @@ enum class Operation : int
     Join = 4,
     Print = 5,
     Concat = 6,
-    Filter = 7
+    Filter = 7,
+    Rescale = 8
 };
 
 template<class T>

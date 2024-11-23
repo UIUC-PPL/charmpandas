@@ -8,14 +8,27 @@
 class Main : public CBase_Main
 {
 public:
+    CProxy_Partition partition;
+
     Main(CkArgMsg* msg) 
     {
-        Server::initialize();
+        partition_ptr = &partition;
         register_handlers();
         agg_proxy = CProxy_Aggregator::ckNew();
 #ifndef NDEBUG
         CkPrintf("Initialization done\n");
 #endif
+    }
+
+    Main(CkMigrateMessage *m) : CBase_Main(m)
+    {
+        partition_ptr = &partition;
+        register_handlers();
+    }
+
+    void pup(PUP::er &p)
+    {
+        p | partition;
     }
 
     void register_handlers()
@@ -24,11 +37,7 @@ public:
         CcsRegisterHandler("disconnect", (CmiHandler) Server::disconnection_handler);
         CcsRegisterHandler("sync", (CmiHandler) Server::sync_handler);
         CcsRegisterHandler("async", (CmiHandler) Server::async_handler);
-        //CcsRegisterHandler("aum_operation", (CmiHandler) Server::operation_handler);
-        //CcsRegisterHandler("aum_sync", (CmiHandler) Server::sync_handler);
-        //CcsRegisterHandler("aum_fetch", (CmiHandler) Server::fetch_handler);
-        //CcsRegisterHandler("aum_delete", (CmiHandler) Server::delete_handler);
-        //CcsRegisterHandler("aum_exit", (CmiHandler) Server::exit_server);
+        CcsRegisterHandler("rescale", (CmiHandler) Server::rescale_handler);
     }
 };
 
