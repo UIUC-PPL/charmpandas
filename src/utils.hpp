@@ -23,7 +23,8 @@ enum class Operation : int
     Print = 5,
     Concat = 6,
     Filter = 7,
-    Rescale = 8
+    Rescale = 8,
+    Skip = 9
 };
 
 template<class T>
