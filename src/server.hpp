@@ -1,3 +1,6 @@
+#ifndef SERVER_H
+#define SERVER_H
+
 #include <stack>
 #include <cinttypes>
 #include <variant>
@@ -12,6 +15,7 @@ CProxy_Partition* partition_ptr;
 CProxy_Aggregator agg_proxy;
 
 extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
+CcsDelayedReply creation_reply;
 
 class Server
 {
@@ -47,9 +51,8 @@ public:
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         int odf = extract<int>(cmd);
         int lb_period = extract<int>(cmd);
+        creation_reply = CcsDelayReply();
         create_partition(odf, lb_period);
-        partition_ptr->poll();
-        CcsSendReply(1, (void*) &reply);
     }
 
     static void disconnection_handler(char* msg)
@@ -65,6 +68,16 @@ public:
         int size = extract<int>(cmd);
         CkPrintf("Async handler epoch = %i\n", epoch);
         partition_ptr->receive_command(epoch, size, cmd);
+    }
+
+    static void async_group_handler(char* msg)
+    {
+        //CkPrintf("Async handler called\n");
+        char* cmd = msg + CmiMsgHeaderSizeBytes;
+        int epoch = extract<int>(cmd);
+        int size = extract<int>(cmd);
+        CkPrintf("Async handler epoch = %i\n", epoch);
+        agg_proxy.receive_command(epoch, size, cmd);
     }
 
     static void sync_handler(char* msg)
@@ -90,3 +103,4 @@ public:
     }
 };
 
+#endif

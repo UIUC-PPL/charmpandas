@@ -3,9 +3,4 @@ mainmodule server
     extern module partition;
 
     readonly CProxy_Aggregator agg_proxy;
-
-    mainchare [migratable] Main
-    {
-        entry Main(CkArgMsg*);
-    };
 }
