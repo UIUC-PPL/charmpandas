@@ -15,11 +15,7 @@
 #include "arrow/acero/exec_plan.h"
 #include <arrow/acero/options.h>
 #include "arrow/compute/expression.h"
-#include "utils.hpp"
-#include "operations.hpp"
-#include "messaging.hpp"
-#include "reduction.hpp"
-#include "serialize.hpp"
+#include "types.hpp"
 #include "partition.decl.h"
 
 
@@ -28,7 +24,7 @@
 
 
 // This needs to have client id in the key
-std::unordered_map<int, CcsDelayedReply> fetch_reply;
+extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
 
 class JoinOptions
 {
@@ -150,7 +146,7 @@ public:
 
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
 
-    void join_right_left();
+    TablePtr join_right_left();
 
     void partition_table(TablePtr table, int result_name);
 };
@@ -231,5 +227,4 @@ public:
     void read_parquet(int table_name, std::string file_path);
 };
 
-#include "partition.def.h"
 #endif

@@ -33,6 +33,7 @@ class Handlers(object):
     disconnection_handler = b'disconnect'
     sync_handler = b'sync'
     async_handler = b'async'
+    async_group_handler = b'async_group'
     rescale_handler = b'rescale'
 
 
@@ -195,7 +196,7 @@ class CCSInterface(Interface):
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
-        self.send_command_async(Handlers.async_handler, cmd)
+        self.send_command_async(Handlers.async_group_handler, cmd)
 
     def set_column(self, table_name, field, rhs):
         self.activity_handler()

@@ -8,6 +8,7 @@
 #include <arrow/compute/api.h>
 #include "arrow/acero/exec_plan.h"
 #include <arrow/acero/options.h>
+#include "types.hpp"
 #include "utils.hpp"
 #include "serialize.hpp"
 #include "reduction.decl.h"

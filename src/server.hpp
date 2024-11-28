@@ -8,13 +8,14 @@
 #include <unordered_map>
 #include "conv-ccs.h"
 #include "manager.h"
+#include "utils.hpp"
 #include "partition.hpp"
 
 CProxy_Partition* partition_ptr;
 
 CProxy_Aggregator agg_proxy;
 
-extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
+std::unordered_map<int, CcsDelayedReply> fetch_reply;
 CcsDelayedReply creation_reply;
 
 class Server

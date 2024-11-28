@@ -38,6 +38,7 @@ void Main::register_handlers()
 
 void Main::init_done()
 {
+    bool reply = true;
     partition_ptr->poll();
     agg_proxy.poll();
     CcsSendDelayedReply(creation_reply, 1, (void*) &reply);

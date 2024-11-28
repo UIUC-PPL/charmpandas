@@ -6,12 +6,8 @@
 #include <arrow/api.h>
 #include <arrow/table.h>
 #include <arrow/scalar.h>
-
-using TablePtr = std::shared_ptr<arrow::Table>;
-using ArrayPtr = std::shared_ptr<arrow::Array>;
-using ScalarPtr = std::shared_ptr<arrow::Scalar>;
-using ChunkedArrayPtr = std::shared_ptr<arrow::ChunkedArray>;
-using BufferPtr = std::shared_ptr<arrow::Buffer>;
+#include <arrow/compute/api.h>
+#include "types.hpp"
 
 enum class Operation : int
 {
@@ -39,6 +35,21 @@ inline T extract(char* &msg, bool increment=true)
 inline Operation lookup_operation(int opcode)
 {
     return static_cast<Operation>(opcode);
+}
+
+inline TablePtr sort_table(TablePtr table, std::string col_name)
+{
+    arrow::compute::SortOptions sort_options;
+    sort_options.sort_keys = {
+        arrow::compute::SortKey(col_name, arrow::compute::SortOrder::Ascending)
+    };
+
+    // Compute the sort indices
+    ArrayPtr indices = arrow::compute::SortIndices(arrow::Datum(table), sort_options).ValueOrDie();
+
+
+    // Get the sorted table
+    return arrow::compute::Take(table, indices).ValueOrDie().table();
 }
 
 #endif
