@@ -65,12 +65,12 @@ class Aggregator : public CBase_Aggregator
 
 private:
     CProxy_Main main_proxy;
-    int num_partitions;
 
     std::unordered_map<int, int> gather_count;
     std::unordered_map<int, std::vector<GatherTableDataMsg*>> gather_buffer;
 
     std::vector<int> local_chares;
+    std::unordered_set<int> local_chares_set;
 
     // for joins
     int num_local_chares;
@@ -95,6 +95,7 @@ private:
 
 public:
     CProxy_Partition partition_proxy;
+    int num_partitions;
 
     Aggregator_SDAG_CODE
 

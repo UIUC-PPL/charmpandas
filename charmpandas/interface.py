@@ -136,6 +136,7 @@ class CCSInterface(Interface):
         self.server = Server(server_ip, server_port)
         self.server.connect()
         self.epoch = -1
+        self.group_epoch = 0
         self.activity_timeout = activity_timeout
         self.timer = None
         cmd = to_bytes(odf, 'i')
@@ -150,12 +151,12 @@ class CCSInterface(Interface):
         cmd = to_bytes(True, 'B')
         self.send_command_async(Handlers.disconnection_handler, cmd)
 
-    def get_header(self):
-        return to_bytes(self.epoch, 'i')
+    def get_header(self, epoch):
+        return to_bytes(epoch, 'i')
 
     def read_parquet(self, table_name, file_path):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
         
         gcmd = to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -168,7 +169,7 @@ class CCSInterface(Interface):
 
     def fetch_table(self, table_name):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
 
         gcmd = to_bytes(Operations.fetch, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -180,7 +181,7 @@ class CCSInterface(Interface):
 
     def join_tables(self, t1, t2, res, k1_list, k2_list, type):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.group_epoch)
 
         gcmd = to_bytes(Operations.join, 'i')
         gcmd += to_bytes(t1, 'i')
@@ -197,10 +198,11 @@ class CCSInterface(Interface):
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
         self.send_command_async(Handlers.async_group_handler, cmd)
+        self.group_epoch += 1
 
     def set_column(self, table_name, field, rhs):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
 
         gcmd = to_bytes(Operations.set_column, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -213,7 +215,7 @@ class CCSInterface(Interface):
 
     def filter(self, table_name, rhs, result):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
 
         gcmd = to_bytes(Operations.filter, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -226,7 +228,7 @@ class CCSInterface(Interface):
 
     def groupby(self, table_name, keys, aggs, result_name):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
 
         gcmd = to_bytes(Operations.groupby, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -251,7 +253,7 @@ class CCSInterface(Interface):
 
     def print_table(self, name):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
 
         gcmd = to_bytes(Operations.print, 'i')
         gcmd += to_bytes(name, 'i')
@@ -262,7 +264,7 @@ class CCSInterface(Interface):
 
     def concat_tables(self, tables, res):
         self.activity_handler()
-        cmd = self.get_header()
+        cmd = self.get_header(self.epoch)
 
         gcmd = to_bytes(Operations.concat, 'i')
         gcmd += to_bytes(len(tables), 'i')

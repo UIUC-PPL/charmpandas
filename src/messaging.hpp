@@ -39,7 +39,10 @@ public:
 
     inline TablePtr get_table()
     {
-        return deserialize(data, size);
+        if (size > 0)
+            return deserialize(data, size);
+        else
+            return nullptr;
     }
 };
 
