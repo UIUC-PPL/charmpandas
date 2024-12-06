@@ -738,9 +738,10 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
 
 void Aggregator::start_join()
 {
+    int local_buffer_limit = thisIndex == (CkNumPes() - 1) ? remote_buffer_limit - 1 : remote_buffer_limit;
     if (CkNumPes() > 1)
     {
-        for (int i = 0; i < remote_buffer_limit; i++)
+        for (int i = 0; i < local_buffer_limit; i++)
         {
             if (i < num_local_chares)
             {
@@ -813,7 +814,6 @@ TablePtr Aggregator::select_remote()
 
 void Aggregator::send_local_data()
 {
-    CkPrintf("Send local data called\n");
     int index = local_chares[next_local_chare++];
     Partition* partition = partition_proxy[index].ckLocal();
     BufferPtr out;
@@ -891,8 +891,9 @@ void Aggregator::process_remote_indices(RemoteJoinMsg* msg)
     // FIXME what happens if table is a nullptr
     remote_msgs[table] = std::make_pair(msg, table);
     remote_tables[table] = std::make_pair(false, false);
-
-    if (num_sends++ < remote_buffer_limit || num_active_requests > 0)
+    
+    int local_buffer_limit = thisIndex == (CkNumPes() - 1) ? remote_buffer_limit - 1 : remote_buffer_limit;
+    if (num_sends++ < local_buffer_limit || num_active_requests > 0)
     {
         remote_tables[table].first = true;
         // TODO Maybe use ncpy messages here?
@@ -912,7 +913,7 @@ void Aggregator::process_remote_indices(RemoteJoinMsg* msg)
 
 void Aggregator::send_table_requests(ChunkedArrayPtr partitions, ChunkedArrayPtr indices, uint8_t dir)
 {
-    CkPrintf("PE%i> Sending table requests\n", CkMyPe());
+    //CkPrintf("PE%i> Sending table requests\n", CkMyPe());
     int table_name;
     if (dir == LEFT)
         table_name = join_opts->table1;
@@ -1058,7 +1059,7 @@ void Aggregator::receive_remote_table(RemoteTableMsg* msg)
             join_right_tables = arrow::ConcatenateTables({join_right_tables, msg->get_table()}).ValueOrDie();
     }
 
-    //CkPrintf("PE%i Remote>Join count = %i, expected tables = %i\n", CkMyPe(), join_count, num_expected_tables);
+    CkPrintf("PE%i Remote>Join count = %i, expected tables = %i\n", CkMyPe(), join_count, num_expected_tables);
 
     if (--num_expected_tables == 0 && join_count == num_partitions)
     {
@@ -1085,7 +1086,7 @@ void Aggregator::receive_local_table(TablePtr table, uint8_t dir)
             join_right_tables = arrow::ConcatenateTables({join_right_tables, table}).ValueOrDie();
     }
 
-    //CkPrintf("PE%i Local>Join count = %i, expected tables = %i\n", CkMyPe(), join_count, num_expected_tables);
+    CkPrintf("PE%i Local>Join count = %i, expected tables = %i\n", CkMyPe(), join_count, num_expected_tables);
 
     if (--num_expected_tables == 0 && join_count == num_partitions)
     {
