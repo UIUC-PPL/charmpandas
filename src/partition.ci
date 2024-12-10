@@ -18,6 +18,8 @@ module partition
 
         entry void gather_table(GatherTableDataMsg* msg);
 
+        entry void deposit_size(int partition, int local_size);
+
         entry void receive_command(int epoch, int size, char cmd[size]);
 
         entry void poll()

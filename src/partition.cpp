@@ -333,6 +333,17 @@ void Partition::operation_filter(char* cmd)
     complete_operation();
 }
 
+void Partition::operation_fetch_size(char* cmd)
+{
+    int table_name = extract<int>(cmd);
+    auto it = tables.find(table_name);
+    int local_size = 0;
+    if (it != std::end(tables))
+        local_size = it->second->num_rows();
+    agg_proxy[0].deposit_size(thisIndex, local_size);
+    complete_operation();
+}
+
 void Partition::aggregate_result(CkReductionMsg* msg)
 {
     CkAssert(thisIndex == 0);
@@ -402,6 +413,12 @@ void Partition::execute_command(int epoch, int size, char* cmd)
         case Operation::Skip:
         {
             complete_operation();
+            break;
+        }
+
+        case Operation::FetchSize:
+        {
+            operation_fetch_size();
             break;
         }
     
@@ -641,6 +658,11 @@ void Aggregator::clear_gather_buffer(int epoch)
     gather_buffer[epoch].clear();
 }
 
+void Aggregator::deposit_size(int partition, int local_size)
+{
+    
+}
+
 void Aggregator::fetch_callback(int epoch, BufferPtr &out)
 {
     CkAssert(CkMyPe() == 0);
@@ -822,6 +844,11 @@ void Aggregator::assign_keys(int num_elements, int* global_hist)
         pe_loads.push(pe_load);
     }
 
+    CkPrintf("Loads after reshuffling:\n");
+    for (int i = 0; i < CkNumPes(); i++)
+        CkPrintf("%i, ", expected_loads[i]);
+    CkPrintf("\n");
+
     thisProxy.shuffle_data(pe_map, expected_loads);
 }
 
@@ -914,11 +941,28 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
     if (expected_rows != -1 && left_size + right_size == expected_rows)
     {
         TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
+        result = clean_metadata(result);
         partition_table(join_left_table, join_opts->table1);
         partition_table(join_right_table, join_opts->table2);
         partition_table(result, join_opts->result_name);
         complete_join();
     }
+}
+
+TablePtr Aggregator::clean_metadata(TablePtr &table)
+{
+    std::vector<int> indices;
+    std::vector<std::string> field_names = table->schema()->field_names();
+    for (int i = 0; i < field_names.size(); i++)
+    {
+        if (field_names[i] == "local_index_l" || field_names[i] == "local_index_r" ||
+            field_names[i] == "home_partition_l" || field_names[i] == "home_partition_r" ||
+            field_names[i] == "_mapped_key_l" || field_names[i] == "_mapped_key_r")
+            continue;
+        int col_index = table->schema()->GetFieldIndex(field_names[i]);
+        indices.push_back(col_index);
+    }
+    return table->SelectColumns(indices).ValueOrDie();
 }
 
 void Aggregator::receive_shuffle_data(JoinShuffleTableMsg* msg)
@@ -939,6 +983,7 @@ void Aggregator::receive_shuffle_data(JoinShuffleTableMsg* msg)
     if (expected_rows != -1 && left_size + right_size == expected_rows)
     {
         TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
+        result = clean_metadata(result);
         partition_table(join_left_table, join_opts->table1);
         partition_table(join_right_table, join_opts->table2);
         partition_table(result, join_opts->result_name);

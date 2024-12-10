@@ -123,6 +123,8 @@ public:
 
     void fetch_callback(int epoch, BufferPtr &out);
 
+    void deposit_size(int partition, int local_size);
+
     void operation_join(char* cmd);
 
     void execute_command(int epoch, int size, char* cmd);
@@ -138,6 +140,8 @@ public:
     void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
     void receive_shuffle_data(JoinShuffleTableMsg* msg);
+
+    TablePtr clean_metadata(TablePtr &table);
 
     void complete_operation();
 

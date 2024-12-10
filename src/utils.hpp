@@ -20,7 +20,8 @@ enum class Operation : int
     Concat = 6,
     Filter = 7,
     Rescale = 8,
-    Skip = 9
+    Skip = 9,
+    FetchSize = 10
 };
 
 template<class T>
