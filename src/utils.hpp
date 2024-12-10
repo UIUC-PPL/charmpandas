@@ -52,4 +52,11 @@ inline TablePtr sort_table(TablePtr table, std::string col_name)
     return arrow::compute::Take(table, indices).ValueOrDie().table();
 }
 
+inline ArrayPtr array_from_vector(std::vector<int> &indices)
+{
+    arrow::Int32Builder builder;
+    builder.AppendValues(indices.data(), indices.size());
+    return builder.Finish().ValueOrDie();
+}
+
 #endif

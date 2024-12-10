@@ -1,3 +1,4 @@
+#include <xxhash.h>
 #include "utils.hpp"
 #include "operations.hpp"
 #include "messaging.hpp"
@@ -194,34 +195,6 @@ inline void Partition::add_table(int table_name, TablePtr table)
         table->num_rows()).ValueOrDie();
     tables[table_name] = set_column(table, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()));
-}
-
-ArrayPtr Partition::array_from_vector(std::vector<int> &indices)
-{
-    arrow::Int32Builder builder;
-    builder.AppendValues(indices.data(), indices.size());
-    return builder.Finish().ValueOrDie();
-}
-
-void Partition::request_local_table(int table_name, std::vector<int> local_indices, uint8_t dir)
-{
-    TablePtr table = tables[table_name];
-    auto indices_array = array_from_vector(local_indices);
-    TablePtr selected = arrow::compute::Take(table, indices_array).ValueOrDie().table();
-    agg_proxy.ckLocalBranch()->receive_local_table(selected, dir);
-}
-
-void Partition::request_remote_table(int table_name, std::vector<int> local_indices, uint8_t dir,
-    int pe_dest)
-{
-    TablePtr table = tables[table_name];
-    auto indices_array = array_from_vector(local_indices);
-    TablePtr selected = arrow::compute::Take(table, indices_array).ValueOrDie().table();
-    BufferPtr out;
-    serialize(selected, out);
-    RemoteTableMsg* msg = new (out->size()) RemoteTableMsg(EPOCH, out->size(), dir);
-    std::memcpy(msg->data, out->data(), out->size());
-    agg_proxy[pe_dest].receive_remote_table(msg);
 }
 
 void Partition::operation_read(char* cmd)
@@ -596,19 +569,14 @@ void Partition::read_parquet(int table_name, std::string file_path)
 Aggregator::Aggregator(CProxy_Main main_proxy_)
         : main_proxy(main_proxy_)
         , num_local_chares(0)
-        , remote_buffer_limit(2)
-        , next_local_chare(0)
-        , num_sends(0)
-        , num_recvs(0)
-        , num_active_requests(0)
-        , num_expected_tables(0)
         , join_count(0)
         , local_t1(nullptr)
         , local_t2(nullptr)
+        , join_left_table(nullptr)
+        , join_right_table(nullptr)
         , join_opts(nullptr)
-        , join_left_tables(nullptr)
-        , join_right_tables(nullptr)
-        , result_indices(nullptr)
+        , join_odf(8)
+        , expected_rows(0)
         , EPOCH(0)
 {}
 
@@ -687,18 +655,21 @@ void Aggregator::operation_join(char* cmd)
     int nkeys = extract<int>(cmd);
 
     std::vector<arrow::FieldRef> left_keys, right_keys;
+    std::vector<std::string> left_key_strings, right_key_strings;
     std::vector<int> lkey_sizes, rkey_sizes;
     int total_lsize = 0, total_rsize = 0;
     for (int i = 0; i < nkeys; i++)
     {
         int lkey_size = extract<int>(cmd);
         left_keys.push_back(arrow::FieldRef(std::string(cmd, lkey_size)));
+        left_key_strings.push_back(std::string(cmd, lkey_size));
         lkey_sizes.push_back(lkey_size);
         cmd += lkey_size;
         total_lsize += lkey_size;
 
         int rkey_size = extract<int>(cmd);
         right_keys.push_back(arrow::FieldRef(std::string(cmd, rkey_size)));
+        right_key_strings.push_back(std::string(cmd, rkey_size));
         rkey_sizes.push_back(rkey_size);
         cmd += rkey_size;
         total_rsize += rkey_size;
@@ -714,7 +685,7 @@ void Aggregator::operation_join(char* cmd)
         type, left_keys, right_keys, arrow::compute::literal(true),
         "_l", "_r"
     );
-    join_opts = new JoinOptions(table1, table2, result_name, opts);
+    join_opts = new JoinOptions(table1, table2, left_key_strings, right_key_strings, result_name, opts);
 
     start_join();
 }
@@ -736,247 +707,219 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
     }
 }
 
+void Aggregator::update_histogram(TablePtr table, std::vector<int> &hist)
+{
+    ChunkedArrayPtr key_array = table->GetColumnByName("_mapped_key");
+
+    for (int i = 0; i < key_array->length(); i++)
+    {
+        int key = std::dynamic_pointer_cast<arrow::Int32Scalar>(key_array->GetScalar(i).ValueOrDie())->value;
+        hist[key]++;
+    }
+}
+
+TablePtr Aggregator::map_keys(TablePtr &table, std::vector<std::string> &fields)
+{
+    std::vector<ChunkedArrayPtr> field_arrays;
+    for (int i = 0; i < fields.size(); i++)
+        field_arrays.push_back(table->GetColumnByName(fields[i]));
+
+    ArrayPtr hash_array;
+
+    arrow::UInt32Builder builder;
+    builder.Reserve(table->num_rows());
+
+    for (int i = 0; i < table->num_rows(); i++)
+    {
+        XXH32_state_t* hash_state = XXH32_createState();
+        XXH32_reset(hash_state, 0);
+
+        for (int j = 0; j < field_arrays.size(); j++)
+        {
+            ChunkedArrayPtr arr = field_arrays[j];
+            std::string key = std::dynamic_pointer_cast<arrow::StringScalar>(arr->GetScalar(i).ValueOrDie())->value->ToString();
+            XXH32_update(hash_state, key.c_str(), key.size());
+        }
+
+        XXH32_hash_t final_hash = XXH32_digest(hash_state);
+
+        builder.Append(static_cast<uint32_t>(final_hash) % (join_odf * CkNumPes()));
+    }
+
+    builder.Finish(&hash_array);
+    return set_column(table, "_mapped_key", arrow::Datum(hash_array));
+}
+
 void Aggregator::start_join()
 {
-    int local_buffer_limit = thisIndex == (CkNumPes() - 1) ? remote_buffer_limit - 1 : remote_buffer_limit;
-    if (CkNumPes() > 1)
+    // map keys to int between 0 to k*P
+    local_t1 = map_keys(local_t1, join_opts->left_keys);
+    local_t2 = map_keys(local_t2, join_opts->right_keys);
+
+    // calculate local histogram
+    std::vector<int> local_hist(join_odf * CkNumPes(), 0);
+    update_histogram(local_t1, local_hist);
+    update_histogram(local_t2, local_hist);    
+
+    // reduction to calculate global histogram
+    CkCallback cb(CkReductionTarget(Aggregator, assign_keys), thisProxy[0]);
+    contribute(join_odf * CkNumPes() * sizeof(int), local_hist.data(), CkReduction::sum_int, cb);
+}
+
+void Aggregator::assign_keys(int num_elements, int* global_hist)
+{
+    // this is where the result of the global
+    // histogram goes
+    std::vector<int> keys(num_elements);
+    std::vector<int> sorted_hist(num_elements);
+    std::iota(keys.begin(), keys.end(), 0);
+
+    std::sort(keys.begin(), keys.end(),
+              [&global_hist](int i, int j) { return global_hist[i] < global_hist[j];});
+
+    for (int i = 0; i < keys.size(); i++)
+        sorted_hist[i] = global_hist[keys[i]];
+
+    // assign buckets to PEs and bcast mapping
+    std::vector<int> pe_map(num_elements);
+    std::vector<int> expected_loads(num_elements, 0);
+    std::priority_queue<PELoad, std::vector<PELoad>, std::greater<PELoad>> pe_loads;
+
+    for (int i = 0; i < CkNumPes(); i++)
+        pe_loads.push(PELoad(i, 0));
+
+    for (int i = 0; i < num_elements; i++)
     {
-        for (int i = 0; i < local_buffer_limit; i++)
+        PELoad pe_load = pe_loads.top();
+        pe_loads.pop();
+        pe_map[keys[i]] = pe_load.pe;
+        pe_load.load += sorted_hist[i];
+        expected_loads[pe_load.pe] += sorted_hist[i];
+        pe_loads.push(pe_load);
+    }
+
+    thisProxy.shuffle_data(pe_map, expected_loads);
+}
+
+void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads)
+{
+    // result of bcast goes here
+    // shuffle data based on data mapping
+    expected_rows = expected_loads[CkMyPe()];
+
+    std::vector<int> indices_t1[CkNumPes()];
+    std::vector<int> indices_t2[CkNumPes()];
+
+    ChunkedArrayPtr key_array = local_t1->GetColumnByName("_mapped_key");
+
+    for (int i = 0; i < key_array->length(); i++)
+    {
+        int pe = pe_map[std::dynamic_pointer_cast<arrow::Int32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
+        indices_t1[pe].push_back(i);
+    }
+
+    key_array = local_t2->GetColumnByName("_mapped_key");
+
+    for (int i = 0; i < key_array->length(); i++)
+    {
+        int pe = pe_map[std::dynamic_pointer_cast<arrow::Int32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
+        indices_t2[pe].push_back(i);
+    }
+
+    TablePtr selected1, selected2;
+    ArrayPtr indices_array1, indices_array2;
+    BufferPtr out1, out2;
+    char* left_ptr, *right_ptr;
+    int left_size, right_size;
+    for (int i = 0; i < CkNumPes(); i++)
+    {
+        if (indices_t1[i].size() > 0)
         {
-            if (i < num_local_chares)
+            indices_array1 = array_from_vector(indices_t1[i]);
+            selected1 = arrow::compute::Take(local_t1, indices_array1).ValueOrDie().table();
+            if (i == CkMyPe())
             {
-                send_local_data();
-                ++num_sends;
+                join_left_table = selected1;
             }
-        }
-
-        thisProxy[thisIndex].listen_remote_table();
-    }
-
-    std::vector<TablePtr> local_list1, local_list2;
-
-    for (int i = 0; i < num_local_chares; i++)
-    {
-        int index = local_chares[i];
-        Partition* partition = partition_proxy[index].ckLocal();
-        std::vector<std::string> left_fields = {"home_partition", "local_index"};
-        std::vector<std::string> right_fields = {"home_partition", "local_index"};
-        for (int i = 0; i < join_opts->opts->left_keys.size(); i++)
-        {
-            left_fields.push_back(*join_opts->opts->left_keys[i].name());
-            right_fields.push_back(*join_opts->opts->right_keys[i].name());
-        }
-        TablePtr table1 = partition->get_table(join_opts->table1, left_fields);
-        TablePtr table2 = partition->get_table(join_opts->table2, right_fields);
-        if (table1 != nullptr)
-            local_list1.push_back(table1);
-        if (table2 != nullptr)
-            local_list2.push_back(table2);
-    }
-
-    if (local_list1.size() > 0)
-        local_t1 = arrow::ConcatenateTables(local_list1).ValueOrDie();
-    else
-        local_t1 = nullptr;
-
-    if (local_list2.size() > 0)
-        local_t2 = arrow::ConcatenateTables(local_list2).ValueOrDie();
-    else
-        local_t2 = nullptr;
-
-    LocalJoinMsg* msg = new (8*sizeof(int)) LocalJoinMsg(local_t1, local_t2, false);
-    *((int*) CkPriorityPtr(msg)) = LOCAL_JOIN_PRIO;
-    CkSetQueueing(msg, CK_QUEUEING_IFIFO);
-    thisProxy[thisIndex].join(msg);
-}
-
-void Aggregator::check_remote_table(TablePtr &table)
-{
-    auto it = remote_tables[table];
-    int fwd_count = remote_msgs[table].first->fwd_count;
-    if (it.second && (it.first || fwd_count == CkNumPes() - 1))
-    {
-        remote_tables.erase(table);
-        delete remote_msgs[table].first;
-        remote_msgs.erase(table);
-        if (num_recvs < num_partitions - num_local_chares && num_recvs >= remote_buffer_limit)
-            thisProxy[(thisIndex - 1) % CkNumPes()].request_join_data();
-    }
-}
-
-TablePtr Aggregator::select_remote()
-{
-    for (auto it = remote_tables.begin(); it != remote_tables.end(); ++it)
-        if (remote_msgs[it->first].first->fwd_count != CkNumPes() - 1)
-            return it->first;
-    return nullptr;
-}
-
-void Aggregator::send_local_data()
-{
-    int index = local_chares[next_local_chare++];
-    Partition* partition = partition_proxy[index].ckLocal();
-    BufferPtr out;
-    std::vector<std::string> fields = {"home_partition", "local_index"};
-    for (int i = 0; i < join_opts->opts->right_keys.size(); i++)
-        fields.push_back(*join_opts->opts->right_keys[i].name());
-    TablePtr table = partition->get_table(join_opts->table2, fields);
-    RemoteJoinMsg* msg;
-    if (table != nullptr)
-    {
-        //CkPrintf("Sending non-empty local table as remote\n");
-        serialize(table, out);
-        msg = new (out->size(), 8*sizeof(int)) RemoteJoinMsg(EPOCH, out->size(), 0);
-        std::memcpy(msg->data, out->data(), out->size());
-    }
-    else
-    {
-        CkPrintf("Sending empty table %i from partition %i\n", join_opts->table2, index);
-        msg = new (0, 8*sizeof(int)) RemoteJoinMsg(EPOCH, 0, 0);
-        msg->data = nullptr;
-    }
-
-    *((int*) CkPriorityPtr(msg)) = REMOTE_DATA_PRIO;
-    CkSetQueueing(msg, CK_QUEUEING_IFIFO);
-    CkSetRefNum(msg, EPOCH);
-    thisProxy[(thisIndex + 1) % CkNumPes()].receive_remote_indices(msg);
-}
-
-void Aggregator::request_join_data()
-{
-    // forward table from buffer or
-    // send local chare data is buffer is empty
-    // do local joins during the free time
-
-    if (remote_tables.size() > 0)
-    {
-        TablePtr remote_table = select_remote();
-        if (remote_table != nullptr)
-        {
-            RemoteJoinMsg* fwd_msg = remote_msgs[remote_table].first->copy();
-            thisProxy[(thisIndex + 1) % CkNumPes()].receive_remote_indices(fwd_msg);
-            
-            // set remote status to sent
-            remote_tables[remote_table].first = true;
-            // check if this remote table is done
-            check_remote_table(remote_table);
-        }
-        else
-        {
-            if (next_local_chare == num_local_chares)
-                num_active_requests++;
             else
-                send_local_data();
-        }
-    }
-    else
-    {
-        // send next_local_chare
-        send_local_data();
-    }
-}
-
-void Aggregator::process_remote_indices(RemoteJoinMsg* msg)
-{
-    // this method should put the remote table
-    // in the remote_tables buffer and call
-    // entry methods for local joins with the remote data
-
-    // the local joins with remote data should be second highest
-    // priority
-    if (++num_recvs < num_partitions - num_local_chares)
-        thisProxy[thisIndex].listen_remote_table();
-    TablePtr table = msg->get_table();
-    CkPrintf("Received remote of size %i\n", msg->size);
-    // FIXME what happens if table is a nullptr
-    remote_msgs[table] = std::make_pair(msg, table);
-    remote_tables[table] = std::make_pair(false, false);
-    
-    int local_buffer_limit = thisIndex == (CkNumPes() - 1) ? remote_buffer_limit - 1 : remote_buffer_limit;
-    if (num_sends++ < local_buffer_limit || num_active_requests > 0)
-    {
-        remote_tables[table].first = true;
-        // TODO Maybe use ncpy messages here?
-        RemoteJoinMsg* fwd_msg = msg->copy();
-        thisProxy[(thisIndex + 1) % CkNumPes()].receive_remote_indices(fwd_msg);
-        --num_active_requests;
-    }
-
-    // allocate msg and assign priority
-    if (table != nullptr)
-        CkPrintf("Remote join table ptr is not null\n");
-    LocalJoinMsg* local_msg = new (8*sizeof(int)) LocalJoinMsg(local_t1, table, true);
-    *((int*) CkPriorityPtr(local_msg)) = REMOTE_JOIN_PRIO;
-    CkSetQueueing(local_msg, CK_QUEUEING_IFIFO);
-    thisProxy[thisIndex].join(local_msg);
-}
-
-void Aggregator::send_table_requests(ChunkedArrayPtr partitions, ChunkedArrayPtr indices, uint8_t dir)
-{
-    //CkPrintf("PE%i> Sending table requests\n", CkMyPe());
-    int table_name;
-    if (dir == LEFT)
-        table_name = join_opts->table1;
-    else
-        table_name = join_opts->table2;
-    int last_partition = -1;
-    std::vector<int> local_indices;
-    for (int i = 0; i < partitions->length(); i++)
-    {
-        int part = std::dynamic_pointer_cast<arrow::Int32Scalar>(partitions->GetScalar(i).ValueOrDie())->value;
-        if (part != last_partition)
-        {
-            if (last_partition != -1)
             {
-                //CkPrintf("PE%i> Requesting data from partition %i\n", thisIndex, last_partition);
-                ++num_expected_tables;
-                //if (partition_proxy[part].ckLocal() != nullptr)
-                if (local_chares_set.find(last_partition) != local_chares_set.end())
-                    // this can be made faster by avoiding local_indices pup
-                    partition_proxy[last_partition].request_local_table(table_name, local_indices, dir);
-                else
-                    partition_proxy[last_partition].request_remote_table(table_name, local_indices, dir, thisIndex);
+                serialize(selected1, out1);
+                left_ptr = (char*) out1->data();
+                left_size = out1->size();
             }
-            local_indices.clear();
-            last_partition = part;
         }
-        local_indices.push_back(std::dynamic_pointer_cast<arrow::Int32Scalar>(indices->GetScalar(i).ValueOrDie())->value);
+        else
+        {
+            left_ptr = nullptr;
+            left_size = 0;
+        }
+
+        if (indices_t2[i].size() > 0)
+        {
+            indices_array2 = array_from_vector(indices_t2[i]);
+            selected2 = arrow::compute::Take(local_t2, indices_array2).ValueOrDie().table();
+            if (i == CkMyPe())
+            {
+                join_right_table = selected2;
+            }
+            else
+            {
+                serialize(selected2, out2);
+                right_ptr = (char*) out2->data();
+                right_size = out2->size();
+            }
+        }
+        else
+        {
+            right_ptr = nullptr;
+            right_size = 0;
+        }
+
+        if (i != CkMyPe() && left_size + right_size > 0)
+        {
+            JoinShuffleTableMsg* msg = new (left_size, right_size) JoinShuffleTableMsg(left_size, right_size);
+            std::memcpy(msg->left_data, left_ptr, left_size);
+            std::memcpy(msg->right_data, right_ptr, right_size);
+            thisProxy[i].receive_shuffle_data(msg);
+        }
     }
 
-    if (local_indices.size() > 0)
+    left_size = join_left_table == nullptr ? 0 : join_left_table->num_rows();
+    right_size = join_right_table == nullptr ? 0 : join_right_table->num_rows();
+
+    if (expected_rows != -1 && left_size + right_size == expected_rows)
     {
-        ++num_expected_tables;
-        //if (partition_proxy[part].ckLocal() != nullptr)
-        if (local_chares_set.find(last_partition) != local_chares_set.end())
-            // this can be made faster by avoiding local_indices pup
-            partition_proxy[last_partition].request_local_table(table_name, local_indices, dir);
-        else
-            partition_proxy[last_partition].request_remote_table(table_name, local_indices, dir, thisIndex);
+        TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
+        partition_table(join_left_table, join_opts->table1);
+        partition_table(join_right_table, join_opts->table2);
+        partition_table(result, join_opts->result_name);
+        complete_join();
     }
 }
 
-void Aggregator::fetch_joined_table(TablePtr joined_table)
+void Aggregator::receive_shuffle_data(JoinShuffleTableMsg* msg)
 {
-    // fetch rest of the columns of the joined table
-    // first do right, left are local to this PE
+    if (join_left_table == nullptr)
+        join_left_table = msg->get_left();
+    else
+        join_left_table = arrow::ConcatenateTables({join_left_table, msg->get_left()}).ValueOrDie();
 
-    std::vector<int> right_keys;
-    right_keys.push_back(joined_table->schema()->GetFieldIndex("home_partition_r"));
-    right_keys.push_back(joined_table->schema()->GetFieldIndex("local_index_r"));
+    if (join_right_table == nullptr)
+        join_right_table = msg->get_right();
+    else
+        join_right_table = arrow::ConcatenateTables({join_right_table, msg->get_right()}).ValueOrDie();
 
-    TablePtr right_table = joined_table->SelectColumns(right_keys).ValueOrDie();
-    right_table = sort_table(right_table, "home_partition_r");
-    send_table_requests(right_table->GetColumnByName("home_partition_r"),
-        right_table->GetColumnByName("local_index_r"), RIGHT);
+    int left_size = join_left_table == nullptr ? 0 : join_left_table->num_rows();
+    int right_size = join_right_table == nullptr ? 0 : join_right_table->num_rows();
 
-    std::vector<int> left_keys;
-    left_keys.push_back(joined_table->schema()->GetFieldIndex("home_partition_l"));
-    left_keys.push_back(joined_table->schema()->GetFieldIndex("local_index_l"));
-
-    TablePtr left_table = joined_table->SelectColumns(left_keys).ValueOrDie();
-    left_table = sort_table(left_table, "home_partition_l");
-    send_table_requests(left_table->GetColumnByName("home_partition_l"),
-        left_table->GetColumnByName("local_index_l"), LEFT);
+    if (expected_rows != -1 && left_size + right_size == expected_rows)
+    {
+        TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
+        partition_table(join_left_table, join_opts->table1);
+        partition_table(join_right_table, join_opts->table2);
+        partition_table(result, join_opts->result_name);
+        complete_join();
+    }
 }
 
 void Aggregator::complete_operation()
@@ -993,12 +936,10 @@ void Aggregator::complete_join()
     join_opts = nullptr;
     //EPOCH++;
 
-    num_sends = 0;
-    num_recvs = 0;
-    join_count = 0;
     local_t1 = nullptr;
     local_t2 = nullptr;
-    result_indices = nullptr;
+    join_left_table = nullptr;
+    join_right_table = nullptr;
 
     for (int i = 0; i < num_local_chares; i++)
     {
@@ -1009,93 +950,6 @@ void Aggregator::complete_join()
     complete_operation();
 }
 
-void Aggregator::join(LocalJoinMsg* msg)
-{
-    TablePtr result = nullptr;
-    if (msg->t1 != nullptr && msg->t2 != nullptr)
-        result = local_join(msg->t1, msg->t2, *join_opts->opts);
-    else if (msg->t1 != nullptr)
-        result = msg->t1;
-    else if (msg->t2 != nullptr)
-        result = msg->t2;
-    
-    if (result != nullptr)
-    {
-        //CkPrintf("Non empty join result is %i\n", msg->is_remote);
-        //CkPrintf("%s\n", result->ToString().c_str());
-        fetch_joined_table(result);
-
-        if (result_indices == nullptr)
-            result_indices = result;
-        else
-            result_indices = arrow::ConcatenateTables({result_indices, result}).ValueOrDie();
-    }
-
-    join_count += (msg->is_remote ? 1 : num_local_chares);
-    
-    if (msg->is_remote)
-    {
-        // set used on local data to true
-        remote_tables[msg->t2].second = true;
-        // check if this remote table is done
-        check_remote_table(msg->t2);
-    }
-}
-
-void Aggregator::receive_remote_table(RemoteTableMsg* msg)
-{
-    if (msg->dir == LEFT)
-    {
-        if (join_left_tables == nullptr)
-            join_left_tables = msg->get_table();
-        else
-            join_left_tables = arrow::ConcatenateTables({join_left_tables, msg->get_table()}).ValueOrDie();
-    }
-    else
-    {
-        if (join_right_tables == nullptr)
-            join_right_tables = msg->get_table();
-        else
-            join_right_tables = arrow::ConcatenateTables({join_right_tables, msg->get_table()}).ValueOrDie();
-    }
-
-    CkPrintf("PE%i Remote>Join count = %i, expected tables = %i\n", CkMyPe(), join_count, num_expected_tables);
-
-    if (--num_expected_tables == 0 && join_count == num_partitions)
-    {
-        TablePtr result = join_right_left();
-        partition_table(result, join_opts->result_name);
-        complete_join();
-    }
-}
-
-void Aggregator::receive_local_table(TablePtr table, uint8_t dir)
-{
-    if (dir == LEFT)
-    {
-        if (join_left_tables == nullptr)
-            join_left_tables = table;
-        else
-            join_left_tables = arrow::ConcatenateTables({join_left_tables, table}).ValueOrDie();
-    }
-    else
-    {
-        if (join_right_tables == nullptr)
-            join_right_tables = table;
-        else
-            join_right_tables = arrow::ConcatenateTables({join_right_tables, table}).ValueOrDie();
-    }
-
-    CkPrintf("PE%i Local>Join count = %i, expected tables = %i\n", CkMyPe(), join_count, num_expected_tables);
-
-    if (--num_expected_tables == 0 && join_count == num_partitions)
-    {
-        //CkPrintf("DONE\n");
-        TablePtr result = join_right_left();
-        partition_table(result, join_opts->result_name);
-        complete_join();
-    }
-}
 
 TablePtr Aggregator::local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts)
 {
@@ -1106,53 +960,6 @@ TablePtr Aggregator::local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJo
 
     // Collect the results
     return arrow::acero::DeclarationToTable(std::move(hashjoin)).ValueOrDie();
-}
-
-TablePtr Aggregator::join_right_left()
-{
-    // left join indices join right
-    arrow::acero::HashJoinNodeOptions opts_left{
-            arrow::acero::JoinType::INNER, 
-            {"home_partition", "local_index"}, {"home_partition_l", "local_index_l"}, 
-            arrow::compute::literal(true),
-            "_l", "_r"
-        };
-
-    TablePtr inter_result = local_join(join_left_tables, result_indices, opts_left);
-
-    std::vector<std::string> colnames = join_left_tables->schema()->field_names();
-    std::vector<int> field_indices;
-    for (int i = 0; i < colnames.size(); i++)
-    {
-        int col_index = inter_result->schema()->GetFieldIndex(colnames[i]);
-        field_indices.push_back(col_index);
-    }
-    inter_result = inter_result->SelectColumns(field_indices).ValueOrDie();
-
-    //CkPrintf("%s\n", inter_result->ToString().c_str());
-
-    arrow::acero::HashJoinNodeOptions opts_right{
-            arrow::acero::JoinType::INNER, 
-            {"home_partition", "local_index"}, {"home_partition", "local_index"},
-            arrow::compute::literal(true),
-            "_l", "_r"
-        };
-    
-    TablePtr result = local_join(inter_result, join_right_tables, opts_right);
-
-    colnames = result->schema()->field_names();
-    field_indices.clear();
-    for (int i = 0; i < colnames.size(); i++)
-    {
-        if (colnames[i] != "home_partition_l" && colnames[i] != "local_index_l" && 
-            colnames[i] != "home_partition_r" && colnames[i] != "local_index_r")
-        {
-            int col_index = result->schema()->GetFieldIndex(colnames[i]);
-            field_indices.push_back(col_index);
-        }
-    }
-
-    return result->SelectColumns(field_indices).ValueOrDie();
 }
 
 void Aggregator::partition_table(TablePtr table, int result_name)

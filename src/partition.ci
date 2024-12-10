@@ -28,21 +28,11 @@ module partition
                 }
         };
 
-        entry [expedited] void request_join_data();
-
-        entry void receive_remote_indices(RemoteJoinMsg* msg);
-
-        entry void listen_remote_table()
-        {
-            when receive_remote_indices[EPOCH](RemoteJoinMsg* msg)
-                serial "process remote" {
-                    process_remote_indices(msg);
-                }
-        };
-
-        entry void receive_remote_table(RemoteTableMsg* msg);
+        entry [reductiontarget] void assign_keys(int num_elements, int global_hist[num_elements]);
         
-        entry void join(LocalJoinMsg* msg);
+        entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
+
+        entry void receive_shuffle_data(JoinShuffleTableMsg* msg);
     };
 
     array [1D] Partition
@@ -60,11 +50,5 @@ module partition
                     execute_command(epoch, size, cmd);
                 }
         };
-
-        entry [expedited] void request_local_table(int table_name, std::vector<int> local_indices, 
-            uint8_t dir);
-
-        entry [expedited] void request_remote_table(int table_name, std::vector<int> local_indices, 
-            uint8_t dir, int pe_dest);
     };
 }

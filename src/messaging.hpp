@@ -46,6 +46,36 @@ public:
     }
 };
 
+class JoinShuffleTableMsg : public CMessage_JoinShuffleTableMsg
+{
+public:
+    char* left_data;
+    char* right_data;
+    int left_size;
+    int right_size;
+
+    JoinShuffleTableMsg(int left_size_, int right_size_)
+        : left_size(left_size_)
+        , right_size(right_size_)
+    {}
+
+    inline TablePtr get_left()
+    {
+        if (left_size > 0)
+            return deserialize(left_data, left_size);
+        else
+            return nullptr;
+    }
+
+    inline TablePtr get_right()
+    {
+        if (right_size > 0)
+            return deserialize(right_data, right_size);
+        else
+            return nullptr;
+    }
+};
+
 class RemoteTableMsg : public BaseTableDataMsg, public CMessage_RemoteTableMsg
 {
 public:

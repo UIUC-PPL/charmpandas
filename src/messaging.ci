@@ -1,5 +1,11 @@
 module messaging
 {
+    message JoinShuffleTableMsg
+    {
+        char left_data[];
+        char right_data[];
+    };
+
     message GatherTableDataMsg
     {
         char data[];

@@ -30,15 +30,35 @@ class JoinOptions
 {
 public:
     int table1, table2;
+    std::vector<std::string> left_keys, right_keys;
     int result_name;
     arrow::acero::HashJoinNodeOptions* opts;
 
-    JoinOptions(int table1_, int table2_, int result_name_, arrow::acero::HashJoinNodeOptions* opts_)
+    JoinOptions(int table1_, int table2_, std::vector<std::string> left_keys_, 
+        std::vector<std::string> right_keys_, int result_name_, arrow::acero::HashJoinNodeOptions* opts_)
         : table1(table1_)
         , table2(table2_)
+        , left_keys(left_keys_)
+        , right_keys(right_keys_)
         , result_name(result_name_)
         , opts(opts_)
     {}
+};
+
+class PELoad
+{
+public:
+    int pe, load;
+
+    PELoad(int pe_, int load_)
+        : pe(pe_)
+        , load(load_)
+    {}
+
+    bool operator>(const PELoad& other) const
+    {
+        return load > other.load;
+    }
 };
 
 class Main : public CBase_Main
@@ -74,22 +94,14 @@ private:
 
     // for joins
     int num_local_chares;
-    int remote_buffer_limit;
-    int next_local_chare;
-    int num_sends;
-    int num_recvs;
-    int num_active_requests;
-    int num_expected_tables;
     int join_count;
+    int join_odf;
+    int expected_rows;
 
     TablePtr local_t1, local_t2;
+    TablePtr join_left_table, join_right_table;
 
     JoinOptions* join_opts;
-    RemoteBuffer remote_tables;
-    RemoteMsgBuffer remote_msgs;
-
-    TablePtr join_left_tables, join_right_tables;
-    TablePtr result_indices;
 
     int EPOCH;
 
@@ -121,33 +133,21 @@ public:
 
     void start_join();
 
-    void check_remote_table(TablePtr &table);
+    void update_histogram(TablePtr table, std::vector<int> &hist);
 
-    TablePtr select_remote();
+    TablePtr map_keys(TablePtr &table, std::vector<std::string> &fields);
 
-    void send_local_data();
+    void assign_keys(int num_elements, int* global_hist);
 
-    void request_join_data();
+    void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
-    void process_remote_indices(RemoteJoinMsg* msg);
-
-    void send_table_requests(ChunkedArrayPtr partitions, ChunkedArrayPtr indices, uint8_t dir);
-
-    void fetch_joined_table(TablePtr joined_table);
+    void receive_shuffle_data(JoinShuffleTableMsg* msg);
 
     void complete_operation();
 
     void complete_join();
 
-    void join(LocalJoinMsg* msg);
-
-    void receive_remote_table(RemoteTableMsg* msg);
-
-    void receive_local_table(TablePtr table, uint8_t dir);
-
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
-
-    TablePtr join_right_left();
 
     void partition_table(TablePtr table, int result_name);
 };
@@ -195,13 +195,6 @@ public:
     TablePtr get_table(int table_name, std::vector<std::string> fields);
 
     inline void add_table(int table_name, TablePtr table);
-
-    ArrayPtr array_from_vector(std::vector<int> &indices);
-
-    void request_local_table(int table_name, std::vector<int> local_indices, uint8_t dir);
-
-    void request_remote_table(int table_name, std::vector<int> local_indices, uint8_t dir,
-        int pe_dest);
 
     void operation_read(char* cmd);
 
