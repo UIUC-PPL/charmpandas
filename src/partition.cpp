@@ -655,21 +655,18 @@ void Aggregator::operation_join(char* cmd)
     int nkeys = extract<int>(cmd);
 
     std::vector<arrow::FieldRef> left_keys, right_keys;
-    std::vector<std::string> left_key_strings, right_key_strings;
     std::vector<int> lkey_sizes, rkey_sizes;
     int total_lsize = 0, total_rsize = 0;
     for (int i = 0; i < nkeys; i++)
     {
         int lkey_size = extract<int>(cmd);
         left_keys.push_back(arrow::FieldRef(std::string(cmd, lkey_size)));
-        left_key_strings.push_back(std::string(cmd, lkey_size));
         lkey_sizes.push_back(lkey_size);
         cmd += lkey_size;
         total_lsize += lkey_size;
 
         int rkey_size = extract<int>(cmd);
         right_keys.push_back(arrow::FieldRef(std::string(cmd, rkey_size)));
-        right_key_strings.push_back(std::string(cmd, rkey_size));
         rkey_sizes.push_back(rkey_size);
         cmd += rkey_size;
         total_rsize += rkey_size;
@@ -685,7 +682,7 @@ void Aggregator::operation_join(char* cmd)
         type, left_keys, right_keys, arrow::compute::literal(true),
         "_l", "_r"
     );
-    join_opts = new JoinOptions(table1, table2, left_key_strings, right_key_strings, result_name, opts);
+    join_opts = new JoinOptions(table1, table2, result_name, opts);
 
     start_join();
 }
@@ -713,16 +710,16 @@ void Aggregator::update_histogram(TablePtr table, std::vector<int> &hist)
 
     for (int i = 0; i < key_array->length(); i++)
     {
-        int key = std::dynamic_pointer_cast<arrow::Int32Scalar>(key_array->GetScalar(i).ValueOrDie())->value;
+        uint32_t key = std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(i).ValueOrDie())->value;
         hist[key]++;
     }
 }
 
-TablePtr Aggregator::map_keys(TablePtr &table, std::vector<std::string> &fields)
+TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fields)
 {
     std::vector<ChunkedArrayPtr> field_arrays;
     for (int i = 0; i < fields.size(); i++)
-        field_arrays.push_back(table->GetColumnByName(fields[i]));
+        field_arrays.push_back(table->GetColumnByName(*(fields[i].name())));
 
     ArrayPtr hash_array;
 
@@ -747,19 +744,46 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<std::string> &fields)
     }
 
     builder.Finish(&hash_array);
-    return set_column(table, "_mapped_key", arrow::Datum(hash_array));
+    return set_column(table, "_mapped_key", arrow::Datum(arrow::ChunkedArray::Make({hash_array}).ValueOrDie()));
 }
 
 void Aggregator::start_join()
 {
+    for (int i = 0; i < num_local_chares; i++)
+    {
+        int index = local_chares[i];
+        Partition* part = partition_proxy[index].ckLocal();
+        TablePtr t1 = part->get_table(join_opts->table1);
+        TablePtr t2 = part->get_table(join_opts->table2);
+        if (t1 != nullptr)
+        {
+            if (local_t1 == nullptr)
+                local_t1 = t1;
+            else
+                local_t1 = arrow::ConcatenateTables({local_t1, t1}).ValueOrDie();
+        }
+
+        if (t2 != nullptr)
+        {
+            if (local_t2 == nullptr)
+                local_t2 = t2;
+            else
+                local_t2 = arrow::ConcatenateTables({local_t2, t2}).ValueOrDie();
+        }
+    }
+
     // map keys to int between 0 to k*P
-    local_t1 = map_keys(local_t1, join_opts->left_keys);
-    local_t2 = map_keys(local_t2, join_opts->right_keys);
+    if (local_t1 != nullptr)
+        local_t1 = map_keys(local_t1, join_opts->opts->left_keys);
+    if (local_t2 != nullptr)
+        local_t2 = map_keys(local_t2, join_opts->opts->right_keys);
 
     // calculate local histogram
     std::vector<int> local_hist(join_odf * CkNumPes(), 0);
-    update_histogram(local_t1, local_hist);
-    update_histogram(local_t2, local_hist);    
+    if (local_t1 != nullptr)
+        update_histogram(local_t1, local_hist);
+    if (local_t2 != nullptr)
+        update_histogram(local_t2, local_hist);    
 
     // reduction to calculate global histogram
     CkCallback cb(CkReductionTarget(Aggregator, assign_keys), thisProxy[0]);
@@ -814,7 +838,7 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
 
     for (int i = 0; i < key_array->length(); i++)
     {
-        int pe = pe_map[std::dynamic_pointer_cast<arrow::Int32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
+        int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
         indices_t1[pe].push_back(i);
     }
 
@@ -822,7 +846,7 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
 
     for (int i = 0; i < key_array->length(); i++)
     {
-        int pe = pe_map[std::dynamic_pointer_cast<arrow::Int32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
+        int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
         indices_t2[pe].push_back(i);
     }
 

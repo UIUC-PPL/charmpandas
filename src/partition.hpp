@@ -30,16 +30,12 @@ class JoinOptions
 {
 public:
     int table1, table2;
-    std::vector<std::string> left_keys, right_keys;
     int result_name;
     arrow::acero::HashJoinNodeOptions* opts;
 
-    JoinOptions(int table1_, int table2_, std::vector<std::string> left_keys_, 
-        std::vector<std::string> right_keys_, int result_name_, arrow::acero::HashJoinNodeOptions* opts_)
+    JoinOptions(int table1_, int table2_, int result_name_, arrow::acero::HashJoinNodeOptions* opts_)
         : table1(table1_)
         , table2(table2_)
-        , left_keys(left_keys_)
-        , right_keys(right_keys_)
         , result_name(result_name_)
         , opts(opts_)
     {}
@@ -135,7 +131,7 @@ public:
 
     void update_histogram(TablePtr table, std::vector<int> &hist);
 
-    TablePtr map_keys(TablePtr &table, std::vector<std::string> &fields);
+    TablePtr map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fields);
 
     void assign_keys(int num_elements, int* global_hist);
 
