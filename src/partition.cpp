@@ -1,4 +1,6 @@
 #include <xxhash.h>
+#include <iostream>
+#include <fstream>
 #include "utils.hpp"
 #include "operations.hpp"
 #include "messaging.hpp"
@@ -7,6 +9,9 @@
 #include "partition.hpp"
 #include "messaging.def.h"
 #include "partition.def.h"
+
+#define MEM_LOGGING true
+#define MEM_LOG_DURATION 100
 
 Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_) 
     : num_partitions(num_partitions_)
@@ -177,6 +182,11 @@ TablePtr Partition::get_table(int table_name, std::vector<std::string> fields)
     return table->SelectColumns(indices).ValueOrDie();
 }
 
+inline void Partition::remove_table(int table_name)
+{
+    tables.erase(table_name);
+}
+
 inline void Partition::add_table(int table_name, TablePtr table)
 {
     arrow::Int32Builder builder;
@@ -231,7 +241,7 @@ void Partition::operation_fetch(char* cmd)
 
 void Partition::operation_print(char* cmd)
 {
-    if (thisIndex == 0)
+    if (true || thisIndex == 0)
     {
         int table_name = extract<int>(cmd);
         auto it = tables.find(table_name);
@@ -300,6 +310,8 @@ void Partition::operation_groupby(char* cmd)
     }
     CkCallback cb(CkIndex_Partition::aggregate_result(NULL), thisProxy[0]);
     contribute(red_msg_size, red_msg, AggregateReductionType, cb);
+
+    delete red_msg;
     
     // Partition 0 is complete only when the result is written to the tables map
     if (thisIndex != 0) complete_operation();
@@ -354,8 +366,19 @@ void Partition::aggregate_result(CkReductionMsg* msg)
     complete_operation();
 }
 
+void Partition::handle_deletions(char* &cmd)
+{
+    int num_deletions = extract<int>(cmd);
+    for (int i = 0; i < num_deletions; i++)
+    {
+        int table_name = extract<int>(cmd);
+        remove_table(table_name);
+    }
+}
+
 void Partition::execute_command(int epoch, int size, char* cmd)
 {
+    handle_deletions(cmd);
     Operation op = lookup_operation(extract<int>(cmd));
 
     switch (op)
@@ -418,7 +441,7 @@ void Partition::execute_command(int epoch, int size, char* cmd)
 
         case Operation::FetchSize:
         {
-            operation_fetch_size();
+            operation_fetch_size(cmd);
             break;
         }
     
@@ -595,11 +618,35 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
         , join_odf(8)
         , expected_rows(0)
         , EPOCH(0)
-{}
+{
+    if (MEM_LOGGING)
+    {
+        init_memory_logging();
+        CcdCallFnAfter((CcdVoidFn) log_memory_usage, nullptr, MEM_LOG_DURATION);
+    }
+}
 
 Aggregator::Aggregator(CkMigrateMessage* m) : CBase_Aggregator(m) {}
 
 void Aggregator::pup(PUP::er &p) {}
+
+void Aggregator::init_memory_logging()
+{
+    char filename[20];
+    sprintf(filename, "memory_log_%i.txt", CkMyPe());
+    std::ofstream outfile;
+    outfile.open(filename, std::ofstream::out | std::ofstream::trunc);    
+}
+
+void Aggregator::log_memory_usage(void* msg, double curr_time)
+{
+    char filename[20];
+    sprintf(filename, "memory_log_%i.txt", CkMyPe());
+    std::ofstream outfile;
+    outfile.open(filename, std::ios_base::app); // append instead of overwrite
+    outfile << curr_time << "," << CmiMemoryUsage() << "\n";
+    CcdCallFnAfter((CcdVoidFn) log_memory_usage, nullptr, MEM_LOG_DURATION);
+}
 
 void Aggregator::init_done()
 {
@@ -660,7 +707,7 @@ void Aggregator::clear_gather_buffer(int epoch)
 
 void Aggregator::deposit_size(int partition, int local_size)
 {
-    
+    //if (table_sizes)
 }
 
 void Aggregator::fetch_callback(int epoch, BufferPtr &out)
@@ -709,8 +756,22 @@ void Aggregator::operation_join(char* cmd)
     start_join();
 }
 
+void Aggregator::handle_deletions(char* &cmd)
+{
+    char* del_cmd;
+    for (int i = 0; i < num_local_chares; i++)
+    {
+        int index = local_chares[i];
+        del_cmd = cmd;
+        partition_proxy[index].ckLocal()->handle_deletions(del_cmd);
+    }
+
+    cmd = del_cmd;
+}
+
 void Aggregator::execute_command(int epoch, int size, char* cmd)
 {
+    handle_deletions(cmd);
     Operation op = lookup_operation(extract<int>(cmd));
 
     switch (op)
@@ -756,8 +817,20 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
         for (int j = 0; j < field_arrays.size(); j++)
         {
             ChunkedArrayPtr arr = field_arrays[j];
-            std::string key = std::dynamic_pointer_cast<arrow::StringScalar>(arr->GetScalar(i).ValueOrDie())->value->ToString();
-            XXH32_update(hash_state, key.c_str(), key.size());
+            if (arr->type()->id() == arrow::Type::STRING)
+            {
+                std::string key = std::dynamic_pointer_cast<arrow::StringScalar>(arr->GetScalar(i).ValueOrDie())->value->ToString();
+                XXH32_update(hash_state, key.c_str(), key.size());
+            }
+            else if (arr->type()->id() == arrow::Type::INT32)
+            {
+                int32_t key = std::dynamic_pointer_cast<arrow::Int32Scalar>(arr->GetScalar(i).ValueOrDie())->value;
+                XXH32_update(hash_state, &key, sizeof(int32_t));
+            }
+            else
+            {
+                CkAbort("Illegal type for join keys");
+            }
         }
 
         XXH32_hash_t final_hash = XXH32_digest(hash_state);
@@ -935,13 +1008,24 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
         }
     }
 
+    local_t1 = nullptr;
+    local_t2 = nullptr;
+    for (int i = 0; i < num_local_chares; i++)
+    {
+        int index = local_chares[i];
+        partition_proxy[index].ckLocal()->remove_table(join_opts->table1);
+        partition_proxy[index].ckLocal()->remove_table(join_opts->table2);
+    }
+
     left_size = join_left_table == nullptr ? 0 : join_left_table->num_rows();
     right_size = join_right_table == nullptr ? 0 : join_right_table->num_rows();
 
     if (expected_rows != -1 && left_size + right_size == expected_rows)
     {
         TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
+        CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
         result = clean_metadata(result);
+        CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
         partition_table(join_left_table, join_opts->table1);
         partition_table(join_right_table, join_opts->table2);
         partition_table(result, join_opts->result_name);
@@ -983,10 +1067,13 @@ void Aggregator::receive_shuffle_data(JoinShuffleTableMsg* msg)
     if (expected_rows != -1 && left_size + right_size == expected_rows)
     {
         TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
+        CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
         result = clean_metadata(result);
+        CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
         partition_table(join_left_table, join_opts->table1);
         partition_table(join_right_table, join_opts->table2);
         partition_table(result, join_opts->result_name);
+        CkPrintf("PE%i> Join result size = %i\n", CkMyPe(), result->num_rows());
         complete_join();
     }
 }
@@ -1018,7 +1105,6 @@ void Aggregator::complete_join()
 
     complete_operation();
 }
-
 
 TablePtr Aggregator::local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts)
 {

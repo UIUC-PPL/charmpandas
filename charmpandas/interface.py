@@ -139,6 +139,7 @@ class CCSInterface(Interface):
         self.group_epoch = 0
         self.activity_timeout = activity_timeout
         self.timer = None
+        self.deletion_buffer = []
         cmd = to_bytes(odf, 'i')
         cmd += to_bytes(lb_period, 'i')
         self.send_command(Handlers.connection_handler, cmd, reply_size=1)
@@ -153,12 +154,23 @@ class CCSInterface(Interface):
 
     def get_header(self, epoch):
         return to_bytes(epoch, 'i')
+    
+    def get_deletion_header(self):
+        cmd = to_bytes(len(self.deletion_buffer), 'i')
+        for table in self.deletion_buffer:
+            cmd += to_bytes(table, 'i')
+        self.deletion_buffer = []
+        return cmd
+    
+    def mark_deletion(self, table_name):
+        self.deletion_buffer.append(table_name)
 
     def read_parquet(self, table_name, file_path):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
         
-        gcmd = to_bytes(Operations.read, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += string_bytes(file_path)
 
@@ -171,7 +183,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
-        gcmd = to_bytes(Operations.fetch, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.fetch, 'i')
         gcmd += to_bytes(table_name, 'i')
 
         cmd += to_bytes(len(gcmd), 'i')
@@ -183,7 +196,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.group_epoch)
 
-        gcmd = to_bytes(Operations.join, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.join, 'i')
         gcmd += to_bytes(t1, 'i')
         gcmd += to_bytes(t2, 'i')
         gcmd += to_bytes(res, 'i')
@@ -204,7 +218,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
-        gcmd = to_bytes(Operations.set_column, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.set_column, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += string_bytes(field)
         gcmd += rhs.graph.identifier
@@ -217,7 +232,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
-        gcmd = to_bytes(Operations.filter, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.filter, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += to_bytes(result.name, 'i')
         gcmd += rhs.graph.identifier
@@ -230,7 +246,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
-        gcmd = to_bytes(Operations.groupby, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.groupby, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += to_bytes(result_name, 'i')
 
@@ -255,7 +272,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
-        gcmd = to_bytes(Operations.print, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.print, 'i')
         gcmd += to_bytes(name, 'i')
 
         cmd += to_bytes(len(gcmd), 'i')
@@ -266,7 +284,8 @@ class CCSInterface(Interface):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
-        gcmd = to_bytes(Operations.concat, 'i')
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.concat, 'i')
         gcmd += to_bytes(len(tables), 'i')
 
         for t in tables:
@@ -282,7 +301,9 @@ class CCSInterface(Interface):
         cmd = to_bytes(self.epoch, 'i')
 
         cmd += to_bytes(new_procs, 'i')
-        gcmd = to_bytes(Operations.rescale, 'i')
+        
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.rescale, 'i')
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd

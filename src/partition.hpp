@@ -113,6 +113,10 @@ public:
 
     void pup(PUP::er &p);
 
+    void init_memory_logging();
+
+    static void log_memory_usage(void* msg, double curr_time);
+
     void init_done();
 
     void register_local_chare(int index);
@@ -124,6 +128,8 @@ public:
     void fetch_callback(int epoch, BufferPtr &out);
 
     void deposit_size(int partition, int local_size);
+
+    void handle_deletions(char* &cmd);
 
     void operation_join(char* cmd);
 
@@ -196,6 +202,10 @@ public:
 
     inline void add_table(int table_name, TablePtr table);
 
+    inline void remove_table(int table_name);
+
+    void handle_deletions(char* &cmd);
+
     void operation_read(char* cmd);
 
     void operation_fetch(char* cmd);
@@ -209,6 +219,8 @@ public:
     void operation_set_column(char* cmd);
 
     void operation_filter(char* cmd);
+
+    void operation_fetch_size(char* cmd);
 
     void aggregate_result(CkReductionMsg* msg);
 
