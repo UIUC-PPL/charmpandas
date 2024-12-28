@@ -10,14 +10,15 @@
 #include "messaging.def.h"
 #include "partition.def.h"
 
-#define MEM_LOGGING true
+#define MEM_LOGGING false
 #define MEM_LOG_DURATION 100
+
+#define TEMP_TABLE_OFFSET (1 << 30)
 
 Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_) 
     : num_partitions(num_partitions_)
     , agg_proxy(agg_proxy_)
     , EPOCH(0)
-    , join_count(0)
     , local_join_done(false)
     , lb_period(lb_period_)
 {
@@ -53,7 +54,6 @@ void Partition::pup(PUP::er &p)
     p | agg_proxy;
     p | num_partitions;
     p | EPOCH;
-    p | join_count;
     p | local_join_done;
     p | lb_period;
     pup_tables(p);
@@ -281,7 +281,7 @@ void Partition::operation_concat(char* cmd)
 
 void Partition::operation_groupby(char* cmd)
 {
-    int table = extract<int>(cmd);
+    /*int table = extract<int>(cmd);
     int result_name = extract<int>(cmd);
     int options_size = extract<int>(cmd);
     char* options = cmd;
@@ -314,7 +314,7 @@ void Partition::operation_groupby(char* cmd)
     delete red_msg;
     
     // Partition 0 is complete only when the result is written to the tables map
-    if (thisIndex != 0) complete_operation();
+    if (thisIndex != 0) complete_operation();*/
 }
 
 void Partition::operation_set_column(char* cmd)
@@ -358,12 +358,12 @@ void Partition::operation_fetch_size(char* cmd)
 
 void Partition::aggregate_result(CkReductionMsg* msg)
 {
-    CkAssert(thisIndex == 0);
+    /*CkAssert(thisIndex == 0);
     AggregateReductionMsg* agg_msg = (AggregateReductionMsg*) msg->getData();
     arrow::acero::AggregateNodeOptions agg_opts = extract_aggregate_options(agg_msg->get_options());
     CkAssert(agg_msg->table_size != 0);
     tables[agg_msg->result_name] = deserialize(agg_msg->get_table(), agg_msg->table_size);
-    complete_operation();
+    complete_operation();*/
 }
 
 void Partition::handle_deletions(char* &cmd)
@@ -609,13 +609,8 @@ void Partition::read_parquet(int table_name, std::string file_path)
 Aggregator::Aggregator(CProxy_Main main_proxy_)
         : main_proxy(main_proxy_)
         , num_local_chares(0)
-        , join_count(0)
-        , local_t1(nullptr)
-        , local_t2(nullptr)
-        , join_left_table(nullptr)
-        , join_right_table(nullptr)
         , join_opts(nullptr)
-        , join_odf(8)
+        , redist_odf(8)
         , expected_rows(0)
         , EPOCH(0)
 {
@@ -716,6 +711,48 @@ void Aggregator::fetch_callback(int epoch, BufferPtr &out)
     CcsSendDelayedReply(fetch_reply[epoch], out->size(), (char*) out->data());
 }
 
+TablePtr Aggregator::get_local_table(int table_name)
+{
+    TablePtr local_table = nullptr;
+    for (int i = 0; i < num_local_chares; i++)
+    {
+        int index = local_chares[i];
+        TablePtr part_table = partition_proxy[index].ckLocal()->get_table(table_name);
+        if (part_table != nullptr)
+        {
+            if (local_table == nullptr)
+                local_table = part_table;
+            else
+                local_table = arrow::ConcatenateTables({local_table, part_table}).ValueOrDie();
+        }
+    }
+
+    return local_table;
+}
+
+void Aggregator::operation_groupby(char* cmd)
+{
+    int table_name = extract<int>(cmd);
+    int result_name = extract<int>(cmd);
+    int options_size = extract<int>(cmd);
+    char* options = cmd;
+    arrow::acero::AggregateNodeOptions* agg_opts = extract_aggregate_options(cmd, true);
+
+    groupby_opts = new GroupByOptions(table_name, result_name, agg_opts);
+
+    TablePtr local_table = get_local_table(table_name);
+    tables[table_name] = local_table;
+
+    TablePtr result = nullptr;
+    if (local_table != nullptr)
+        result = local_aggregation(local_table, *agg_opts);
+
+    tables[TEMP_TABLE_OFFSET + next_temp_name] = result;
+    auto redist_keys = std::vector<std::vector<arrow::FieldRef>>{agg_opts->keys};
+    auto table_names = std::vector<int>{TEMP_TABLE_OFFSET + next_temp_name};
+    redistribute(table_names, redist_keys, RedistOperation::GroupBy);
+}
+
 void Aggregator::operation_join(char* cmd)
 {
     int table1 = extract<int>(cmd);
@@ -782,6 +819,12 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
             break;
         }
 
+        case Operation::GroupBy:
+        {
+            operation_groupby(cmd);
+            break;
+        }
+
         default:
             break;
     }
@@ -835,7 +878,7 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
 
         XXH32_hash_t final_hash = XXH32_digest(hash_state);
 
-        builder.Append(static_cast<uint32_t>(final_hash) % (join_odf * CkNumPes()));
+        builder.Append(static_cast<uint32_t>(final_hash) % (redist_odf * CkNumPes()));
     }
 
     builder.Finish(&hash_array);
@@ -844,45 +887,35 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
 
 void Aggregator::start_join()
 {
-    for (int i = 0; i < num_local_chares; i++)
-    {
-        int index = local_chares[i];
-        Partition* part = partition_proxy[index].ckLocal();
-        TablePtr t1 = part->get_table(join_opts->table1);
-        TablePtr t2 = part->get_table(join_opts->table2);
-        if (t1 != nullptr)
-        {
-            if (local_t1 == nullptr)
-                local_t1 = t1;
-            else
-                local_t1 = arrow::ConcatenateTables({local_t1, t1}).ValueOrDie();
-        }
+    tables[join_opts->table1] = get_local_table(join_opts->table1);
+    tables[join_opts->table2] = get_local_table(join_opts->table2);
 
-        if (t2 != nullptr)
-        {
-            if (local_t2 == nullptr)
-                local_t2 = t2;
-            else
-                local_t2 = arrow::ConcatenateTables({local_t2, t2}).ValueOrDie();
-        }
+    auto redist_keys = std::vector<std::vector<arrow::FieldRef>>{
+        join_opts->opts->left_keys, join_opts->opts->right_keys};
+    redistribute({join_opts->table1, join_opts->table2}, 
+        redist_keys, RedistOperation::Join);
+}
+
+void Aggregator::redistribute(std::vector<int> table_names, std::vector<std::vector<arrow::FieldRef>> &keys,
+    RedistOperation oper)
+{
+    redist_table_names = table_names;
+    redist_operation = oper;
+    for (int i = 0; i < table_names.size(); i++)
+    {
+        if (tables[table_names[i]] != nullptr)
+            tables[table_names[i]] = map_keys(tables[table_names[i]], keys[i]);
     }
 
-    // map keys to int between 0 to k*P
-    if (local_t1 != nullptr)
-        local_t1 = map_keys(local_t1, join_opts->opts->left_keys);
-    if (local_t2 != nullptr)
-        local_t2 = map_keys(local_t2, join_opts->opts->right_keys);
+    std::vector<int> local_hist(redist_odf * CkNumPes(), 0);
+    for (int i = 0; i < table_names.size(); i++)
+    {
+        if (tables[table_names[i]] != nullptr)
+            update_histogram(tables[table_names[i]], local_hist);
+    }
 
-    // calculate local histogram
-    std::vector<int> local_hist(join_odf * CkNumPes(), 0);
-    if (local_t1 != nullptr)
-        update_histogram(local_t1, local_hist);
-    if (local_t2 != nullptr)
-        update_histogram(local_t2, local_hist);    
-
-    // reduction to calculate global histogram
     CkCallback cb(CkReductionTarget(Aggregator, assign_keys), thisProxy[0]);
-    contribute(join_odf * CkNumPes() * sizeof(int), local_hist.data(), CkReduction::sum_int, cb);
+    contribute(redist_odf * CkNumPes() * sizeof(int), local_hist.data(), CkReduction::sum_int, cb);
 }
 
 void Aggregator::assign_keys(int num_elements, int* global_hist)
@@ -931,106 +964,142 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
     // shuffle data based on data mapping
     expected_rows = expected_loads[CkMyPe()];
 
-    std::vector<int> indices_t1[CkNumPes()];
-    std::vector<int> indices_t2[CkNumPes()];
+    std::vector<BufferPtr> serialized_buffers[CkNumPes()];
+    int total_size[CkNumPes()];
+    for (int i = 0; i < CkNumPes(); i++)
+        total_size[i] = 0;
 
-    ChunkedArrayPtr key_array = local_t1->GetColumnByName("_mapped_key");
-
-    for (int i = 0; i < key_array->length(); i++)
+    for (int i = 0; i < redist_table_names.size(); i++)
     {
-        int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
-        indices_t1[pe].push_back(i);
+        int table_name = redist_table_names[i];
+        TablePtr table = tables[table_name];
+        std::vector<int> indices[CkNumPes()];
+
+        //CkPrintf("%i: %s\n", table_name, table->schema()->ToString().c_str());
+        ChunkedArrayPtr key_array = table->GetColumnByName("_mapped_key");
+
+        for (int j = 0; j < key_array->length(); j++)
+        {
+            int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(j).ValueOrDie())->value];
+            indices[pe].push_back(j);
+        }
+
+        for (int j = 0; j < CkNumPes(); j++)
+        {
+            if (indices[j].size() > 0)
+            {
+                ChunkedArrayPtr indices_array = array_from_vector(indices[j]);
+                TablePtr selected = arrow::compute::Take(table, indices_array).ValueOrDie().table();
+                if (j == CkMyPe())
+                {
+                    auto it = redist_tables.find(table_name);
+                    if (it == std::end(redist_tables))
+                        redist_tables[table_name] = selected;
+                    else
+                        it->second = arrow::ConcatenateTables({it->second, selected}).ValueOrDie();
+                }
+                else
+                {
+                    BufferPtr out;
+                    serialize(selected, out);
+                    serialized_buffers[j].push_back(out);
+                    total_size[j] += out->size();
+                }
+            }
+            else
+            {
+                serialized_buffers[j].push_back(nullptr);
+            }
+        }
     }
 
-    key_array = local_t2->GetColumnByName("_mapped_key");
-
-    for (int i = 0; i < key_array->length(); i++)
-    {
-        int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(i).ValueOrDie())->value];
-        indices_t2[pe].push_back(i);
-    }
-
-    TablePtr selected1, selected2;
-    ArrayPtr indices_array1, indices_array2;
-    BufferPtr out1, out2;
-    char* left_ptr, *right_ptr;
-    int left_size, right_size;
     for (int i = 0; i < CkNumPes(); i++)
     {
-        if (indices_t1[i].size() > 0)
+        if (i != CkMyPe() && total_size[i] > 0)
         {
-            indices_array1 = array_from_vector(indices_t1[i]);
-            selected1 = arrow::compute::Take(local_t1, indices_array1).ValueOrDie().table();
-            if (i == CkMyPe())
-            {
-                join_left_table = selected1;
-            }
-            else
-            {
-                serialize(selected1, out1);
-                left_ptr = (char*) out1->data();
-                left_size = out1->size();
-            }
-        }
-        else
-        {
-            left_ptr = nullptr;
-            left_size = 0;
-        }
-
-        if (indices_t2[i].size() > 0)
-        {
-            indices_array2 = array_from_vector(indices_t2[i]);
-            selected2 = arrow::compute::Take(local_t2, indices_array2).ValueOrDie().table();
-            if (i == CkMyPe())
-            {
-                join_right_table = selected2;
-            }
-            else
-            {
-                serialize(selected2, out2);
-                right_ptr = (char*) out2->data();
-                right_size = out2->size();
-            }
-        }
-        else
-        {
-            right_ptr = nullptr;
-            right_size = 0;
-        }
-
-        if (i != CkMyPe() && left_size + right_size > 0)
-        {
-            JoinShuffleTableMsg* msg = new (left_size, right_size) JoinShuffleTableMsg(left_size, right_size);
-            std::memcpy(msg->left_data, left_ptr, left_size);
-            std::memcpy(msg->right_data, right_ptr, right_size);
+            // build redist message
+            RedistTableMsg* msg = new (total_size[i], serialized_buffers[i].size()) RedistTableMsg(
+                serialized_buffers[i], total_size[i]);
             thisProxy[i].receive_shuffle_data(msg);
         }
     }
 
-    local_t1 = nullptr;
-    local_t2 = nullptr;
-    for (int i = 0; i < num_local_chares; i++)
+    for (int i = 0; i < redist_table_names[i]; i++)
     {
-        int index = local_chares[i];
-        partition_proxy[index].ckLocal()->remove_table(join_opts->table1);
-        partition_proxy[index].ckLocal()->remove_table(join_opts->table2);
+        int table_name = redist_table_names[i];
+        tables.erase(table_name);
+
+        for (int i = 0; i < num_local_chares; i++)
+        {
+            int index = local_chares[i];
+            partition_proxy[index].ckLocal()->remove_table(table_name);
+        }
     }
 
-    left_size = join_left_table == nullptr ? 0 : join_left_table->num_rows();
-    right_size = join_right_table == nullptr ? 0 : join_right_table->num_rows();
-
-    if (expected_rows != -1 && left_size + right_size == expected_rows)
+    int total_redist_rows = 0;
+    for (int i = 0; i < redist_table_names.size(); i++)
     {
-        TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
-        CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
-        result = clean_metadata(result);
-        CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
-        partition_table(join_left_table, join_opts->table1);
-        partition_table(join_right_table, join_opts->table2);
-        partition_table(result, join_opts->result_name);
-        complete_join();
+        int table_name = redist_table_names[i];
+        auto it = redist_tables.find(table_name);
+        if (it != std::end(redist_tables))
+            total_redist_rows += it->second->num_rows();
     }
+
+    if (expected_rows != -1 && total_redist_rows == expected_rows)
+    {
+        for (int i = 0; i < redist_table_names.size(); i++)
+        {
+            int table_name = redist_table_names[i];
+            tables[table_name] = redist_tables[table_name];
+            redist_tables.erase(table_name);
+        }
+        redist_callback();
+    }
+}
+
+void Aggregator::redist_callback()
+{
+    switch (redist_operation)
+    {
+        case RedistOperation::Join:
+        {
+            join_callback();
+            break;
+        }
+
+        case RedistOperation::GroupBy:
+        {
+            groupby_callback();
+            break;
+        }
+
+        default:
+            CkAbort("Redist callback not found!");
+    }
+}
+
+void Aggregator::groupby_callback()
+{
+    // update groupby options
+    for (int i = 0; i < groupby_opts->opts->aggregates.size(); i++)
+        groupby_opts->opts->aggregates[i].target = std::vector<arrow::FieldRef>{
+            arrow::FieldRef(groupby_opts->opts->aggregates[i].name)};
+    TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
+    result = clean_metadata(result);
+    partition_table(result, groupby_opts->result_name);
+    complete_groupby();
+}
+
+void Aggregator::join_callback()
+{
+    TablePtr result = local_join(tables[join_opts->table1], tables[join_opts->table2], *join_opts->opts);
+    CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
+    result = clean_metadata(result);
+    CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
+    partition_table(tables[join_opts->table1], join_opts->table1);
+    partition_table(tables[join_opts->table2], join_opts->table2);
+    partition_table(result, join_opts->result_name);
+    complete_join();
 }
 
 TablePtr Aggregator::clean_metadata(TablePtr &table)
@@ -1039,9 +1108,9 @@ TablePtr Aggregator::clean_metadata(TablePtr &table)
     std::vector<std::string> field_names = table->schema()->field_names();
     for (int i = 0; i < field_names.size(); i++)
     {
-        if (field_names[i] == "local_index_l" || field_names[i] == "local_index_r" ||
-            field_names[i] == "home_partition_l" || field_names[i] == "home_partition_r" ||
-            field_names[i] == "_mapped_key_l" || field_names[i] == "_mapped_key_r")
+        if (field_names[i].rfind("local_index_", 0) == 0 ||
+            field_names[i].rfind("home_partition_", 0) == 0 ||
+            field_names[i].rfind("_mapped_key_", 0) == 0)
             continue;
         int col_index = table->schema()->GetFieldIndex(field_names[i]);
         indices.push_back(col_index);
@@ -1049,32 +1118,31 @@ TablePtr Aggregator::clean_metadata(TablePtr &table)
     return table->SelectColumns(indices).ValueOrDie();
 }
 
-void Aggregator::receive_shuffle_data(JoinShuffleTableMsg* msg)
+void Aggregator::receive_shuffle_data(RedistTableMsg* msg)
 {
-    if (join_left_table == nullptr)
-        join_left_table = msg->get_left();
-    else
-        join_left_table = arrow::ConcatenateTables({join_left_table, msg->get_left()}).ValueOrDie();
+    std::vector<TablePtr> remote_tables = msg->get_tables();
 
-    if (join_right_table == nullptr)
-        join_right_table = msg->get_right();
-    else
-        join_right_table = arrow::ConcatenateTables({join_right_table, msg->get_right()}).ValueOrDie();
-
-    int left_size = join_left_table == nullptr ? 0 : join_left_table->num_rows();
-    int right_size = join_right_table == nullptr ? 0 : join_right_table->num_rows();
-
-    if (expected_rows != -1 && left_size + right_size == expected_rows)
+    int total_redist_rows = 0;
+    for (int i = 0; i < remote_tables.size(); i++)
     {
-        TablePtr result = local_join(join_left_table, join_right_table, *join_opts->opts);
-        CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
-        result = clean_metadata(result);
-        CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
-        partition_table(join_left_table, join_opts->table1);
-        partition_table(join_right_table, join_opts->table2);
-        partition_table(result, join_opts->result_name);
-        CkPrintf("PE%i> Join result size = %i\n", CkMyPe(), result->num_rows());
-        complete_join();
+        int table_name = redist_table_names[i];
+        auto it = redist_tables.find(table_name);
+        if (it == std::end(redist_tables))
+            redist_tables[table_name] = remote_tables[i];
+        else
+            it->second = arrow::ConcatenateTables({it->second, remote_tables[i]}).ValueOrDie();
+        total_redist_rows += redist_tables[table_name]->num_rows();
+    }
+
+    if (expected_rows != -1 && total_redist_rows == expected_rows)
+    {
+        for (int i = 0; i < redist_table_names.size(); i++)
+        {
+            int table_name = redist_table_names[i];
+            tables[table_name] = redist_tables[table_name];
+            redist_tables.erase(table_name);
+        }
+        redist_callback();
     }
 }
 
@@ -1084,6 +1152,24 @@ void Aggregator::complete_operation()
     thisProxy[thisIndex].poll();
 }
 
+void Aggregator::complete_groupby()
+{
+    CkPrintf("PE%i> Completed groupby\n", CkMyPe());
+    delete groupby_opts->opts;
+    delete groupby_opts;
+    groupby_opts = nullptr;
+    //EPOCH++;
+    tables.erase(TEMP_TABLE_OFFSET + next_temp_name++);
+
+    for (int i = 0; i < num_local_chares; i++)
+    {
+        int index = local_chares[i];
+        partition_proxy[index].ckLocal()->complete_operation();
+    }
+
+    complete_operation();
+}
+
 void Aggregator::complete_join()
 {
     CkPrintf("PE%i> Completed join\n", CkMyPe());
@@ -1091,11 +1177,6 @@ void Aggregator::complete_join()
     delete join_opts;
     join_opts = nullptr;
     //EPOCH++;
-
-    local_t1 = nullptr;
-    local_t2 = nullptr;
-    join_left_table = nullptr;
-    join_right_table = nullptr;
 
     for (int i = 0; i < num_local_chares; i++)
     {

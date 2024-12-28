@@ -46,35 +46,54 @@ public:
     }
 };
 
-class JoinShuffleTableMsg : public CMessage_JoinShuffleTableMsg
+class RedistTableMsg : public CMessage_RedistTableMsg
 {
 public:
-    char* left_data;
-    char* right_data;
-    int left_size;
-    int right_size;
+    char* data;
+    int* sizes;
+    int num_tables;
+    int total_size;
 
-    JoinShuffleTableMsg(int left_size_, int right_size_)
-        : left_size(left_size_)
-        , right_size(right_size_)
-    {}
-
-    inline TablePtr get_left()
+    RedistTableMsg(std::vector<BufferPtr> &buffers, int total_size_)
+        : total_size(total_size_)
     {
-        if (left_size > 0)
-            return deserialize(left_data, left_size);
-        else
-            return nullptr;
+        num_tables = buffers.size();
+        int offset = 0;
+        for (int i = 0; i < buffers.size(); i++)
+        {
+            if (buffers[i] == nullptr)
+            {
+                sizes[i] = 0;
+            }
+            else
+            {
+                sizes[i] = buffers[i]->size();
+                std::memcpy(data + offset, buffers[i]->data(), sizes[i]);
+            }
+            offset += sizes[i];
+        }
     }
 
-    inline TablePtr get_right()
+    std::vector<TablePtr> get_tables()
     {
-        if (right_size > 0)
-            return deserialize(right_data, right_size);
-        else
-            return nullptr;
+        std::vector<TablePtr> tables;
+        int offset = 0;
+        for (int i = 0; i < num_tables; i++)
+        {
+            if (sizes[i] == 0)
+            {
+                tables.push_back(nullptr);
+            }
+            else
+            {
+                tables.push_back(deserialize(data + offset, sizes[i]));
+                offset += sizes[i];
+            }
+        }
+        return tables;
     }
 };
+
 
 class RemoteTableMsg : public BaseTableDataMsg, public CMessage_RemoteTableMsg
 {

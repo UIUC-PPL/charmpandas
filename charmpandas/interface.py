@@ -244,7 +244,7 @@ class CCSInterface(Interface):
 
     def groupby(self, table_name, keys, aggs, result_name):
         self.activity_handler()
-        cmd = self.get_header(self.epoch)
+        cmd = self.get_header(self.group_epoch)
 
         gcmd = self.get_deletion_header()
         gcmd += to_bytes(Operations.groupby, 'i')
@@ -266,7 +266,8 @@ class CCSInterface(Interface):
         gcmd += opts_cmd
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
-        self.send_command_async(Handlers.async_handler, cmd)
+        self.send_command_async(Handlers.async_group_handler, cmd)
+        self.group_epoch += 1
 
     def print_table(self, name):
         self.activity_handler()

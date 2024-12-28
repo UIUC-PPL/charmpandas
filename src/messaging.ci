@@ -1,9 +1,9 @@
 module messaging
 {
-    message JoinShuffleTableMsg
+    message RedistTableMsg
     {
-        char left_data[];
-        char right_data[];
+        char data[];
+        int sizes[];
     };
 
     message GatherTableDataMsg

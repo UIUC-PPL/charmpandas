@@ -34,7 +34,7 @@ module partition
         
         entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
-        entry void receive_shuffle_data(JoinShuffleTableMsg* msg);
+        entry void receive_shuffle_data(RedistTableMsg* msg);
     };
 
     array [1D] Partition

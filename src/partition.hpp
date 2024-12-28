@@ -41,6 +41,20 @@ public:
     {}
 };
 
+class GroupByOptions
+{
+public:
+    int table_name;
+    int result_name;
+    arrow::acero::AggregateNodeOptions* opts;
+
+    GroupByOptions(int table_name_, int result_name_, arrow::acero::AggregateNodeOptions* opts_)
+        : table_name(table_name_)
+        , result_name(result_name_)
+        , opts(opts_)
+    {}
+};
+
 class PELoad
 {
 public:
@@ -78,6 +92,7 @@ class Aggregator : public CBase_Aggregator
 {
     using RemoteBuffer = std::unordered_map<TablePtr, std::pair<bool, bool>>;
     using RemoteMsgBuffer = std::unordered_map<TablePtr, std::pair<RemoteJoinMsg*, TablePtr>>;
+    using CallbackType = void (Aggregator::*)(void);
 
 private:
     CProxy_Main main_proxy;
@@ -90,14 +105,18 @@ private:
 
     // for joins
     int num_local_chares;
-    int join_count;
-    int join_odf;
+    int redist_odf;
     int expected_rows;
+    int next_temp_name;
 
-    TablePtr local_t1, local_t2;
-    TablePtr join_left_table, join_right_table;
+    std::vector<int> redist_table_names;
+    std::unordered_map<int, TablePtr> tables;
+    std::unordered_map<int, TablePtr> redist_tables;
+
+    RedistOperation redist_operation;
 
     JoinOptions* join_opts;
+    GroupByOptions* groupby_opts;
 
     int EPOCH;
 
@@ -119,6 +138,8 @@ public:
 
     void init_done();
 
+    TablePtr get_local_table(int table_name);
+
     void register_local_chare(int index);
 
     void gather_table(GatherTableDataMsg* msg);
@@ -131,7 +152,18 @@ public:
 
     void handle_deletions(char* &cmd);
 
+    void redistribute(std::vector<int> table_names, std::vector<std::vector<arrow::FieldRef>> &keys,
+        RedistOperation oper);
+
+    void redist_callback();
+
+    void groupby_callback();
+
+    void join_callback();
+
     void operation_join(char* cmd);
+
+    void operation_groupby(char* cmd);
 
     void execute_command(int epoch, int size, char* cmd);
 
@@ -145,11 +177,13 @@ public:
 
     void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
-    void receive_shuffle_data(JoinShuffleTableMsg* msg);
+    void receive_shuffle_data(RedistTableMsg* msg);
 
     TablePtr clean_metadata(TablePtr &table);
 
     void complete_operation();
+
+    void complete_groupby();
 
     void complete_join();
 
@@ -165,7 +199,6 @@ private:
     CProxy_Aggregator agg_proxy;
     int num_partitions;
     int EPOCH;
-    int join_count;
     bool local_join_done;
     int lb_period;
     std::unordered_map<int, TablePtr> tables;

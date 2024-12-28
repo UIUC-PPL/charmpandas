@@ -9,6 +9,12 @@
 #include <arrow/compute/api.h>
 #include "types.hpp"
 
+enum class RedistOperation : int
+{
+    Join = 0,
+    GroupBy = 1
+};
+
 enum class Operation : int
 {
     Read = 0,
@@ -53,11 +59,11 @@ inline TablePtr sort_table(TablePtr table, std::string col_name)
     return arrow::compute::Take(table, indices).ValueOrDie().table();
 }
 
-inline ArrayPtr array_from_vector(std::vector<int> &indices)
+inline ChunkedArrayPtr array_from_vector(std::vector<int> &indices)
 {
     arrow::Int32Builder builder;
     builder.AppendValues(indices.data(), indices.size());
-    return builder.Finish().ValueOrDie();
+    return arrow::ChunkedArray::Make({builder.Finish().ValueOrDie()}).ValueOrDie();
 }
 
 #endif
