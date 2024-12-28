@@ -199,7 +199,6 @@ private:
     CProxy_Aggregator agg_proxy;
     int num_partitions;
     int EPOCH;
-    bool local_join_done;
     int lb_period;
     std::unordered_map<int, TablePtr> tables;
     std::unordered_map<int, BufferPtr> tables_serialized;

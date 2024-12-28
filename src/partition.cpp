@@ -10,7 +10,7 @@
 #include "messaging.def.h"
 #include "partition.def.h"
 
-#define MEM_LOGGING false
+#define MEM_LOGGING true
 #define MEM_LOG_DURATION 100
 
 #define TEMP_TABLE_OFFSET (1 << 30)
@@ -19,7 +19,6 @@ Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_
     : num_partitions(num_partitions_)
     , agg_proxy(agg_proxy_)
     , EPOCH(0)
-    , local_join_done(false)
     , lb_period(lb_period_)
 {
     usesAtSync = true;
@@ -54,7 +53,6 @@ void Partition::pup(PUP::er &p)
     p | agg_proxy;
     p | num_partitions;
     p | EPOCH;
-    p | local_join_done;
     p | lb_period;
     pup_tables(p);
     if (p.isUnpacking())
@@ -610,6 +608,7 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
         : main_proxy(main_proxy_)
         , num_local_chares(0)
         , join_opts(nullptr)
+        , groupby_opts(nullptr)
         , redist_odf(8)
         , expected_rows(0)
         , EPOCH(0)
@@ -621,9 +620,26 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
     }
 }
 
-Aggregator::Aggregator(CkMigrateMessage* m) : CBase_Aggregator(m) {}
+Aggregator::Aggregator(CkMigrateMessage* m) 
+        : CBase_Aggregator(m)
+        , expected_rows(0)
+        , join_opts(nullptr)
+        , groupby_opts(nullptr)
+{
+    if (MEM_LOGGING)
+    {
+        init_memory_logging();
+        CcdCallFnAfter((CcdVoidFn) log_memory_usage, nullptr, MEM_LOG_DURATION);
+    }
+}
 
-void Aggregator::pup(PUP::er &p) {}
+void Aggregator::pup(PUP::er &p) 
+{
+    p | main_proxy;
+    p | redist_odf;
+    p | next_temp_name;
+    p | EPOCH;
+}
 
 void Aggregator::init_memory_logging()
 {
@@ -1082,8 +1098,13 @@ void Aggregator::groupby_callback()
 {
     // update groupby options
     for (int i = 0; i < groupby_opts->opts->aggregates.size(); i++)
+    {
+        groupby_opts->opts->aggregates[i].function = aggregation_callback_fn(
+            groupby_opts->opts->aggregates[i].function);
         groupby_opts->opts->aggregates[i].target = std::vector<arrow::FieldRef>{
             arrow::FieldRef(groupby_opts->opts->aggregates[i].name)};
+    }
+
     TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
     result = clean_metadata(result);
     partition_table(result, groupby_opts->result_name);
@@ -1148,6 +1169,10 @@ void Aggregator::receive_shuffle_data(RedistTableMsg* msg)
 
 void Aggregator::complete_operation()
 {
+    redist_table_names.clear();
+    tables.clear();
+    redist_tables.clear();
+
     EPOCH++;
     thisProxy[thisIndex].poll();
 }

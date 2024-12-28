@@ -142,6 +142,16 @@ arrow::acero::AggregateNodeOptions* extract_aggregate_options(char* msg, bool is
     return opts;
 }
 
+std::string aggregation_callback_fn(std::string &agg_fn)
+{
+    if (agg_fn == "hash_count")
+        return "hash_sum";
+    if (agg_fn == "hash_sum")
+        return "hash_sum";
+
+    return "hash_sum";
+}
+
 TablePtr local_aggregation(TablePtr &table, arrow::acero::AggregateNodeOptions &agg_opts)
 {
     arrow::acero::Declaration source{"table_source", arrow::acero::TableSourceNodeOptions(table)};
