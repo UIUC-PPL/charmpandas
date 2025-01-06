@@ -73,7 +73,7 @@ inline arrow::Datum execute_operation(ArrayOperation op, std::vector<arrow::Datu
     return arrow::compute::CallFunction(get_array_operation(op), operands).ValueOrDie();
 }
 
-inline TablePtr set_column(TablePtr table, std::string &field_name, arrow::Datum &result_datum)
+inline TablePtr set_column(TablePtr table, std::string field_name, arrow::Datum result_datum)
 {
     ChunkedArrayPtr result = result_datum.chunked_array();
     auto result_field = arrow::field(field_name, result->type());

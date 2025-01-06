@@ -155,6 +155,11 @@ class DataFrame(object):
             raise NotImplementedError("Only way to create dataframe right now"
                                       "is to read a parquet file")
         
+    def __del__(self):
+        # mark this df for deletion
+        interface = get_interface()
+        interface.mark_deletion(self.name)
+        
     def __getitem__(self, rhs):
         if isinstance(rhs, str):
             return DataFrameField(self, field=rhs)

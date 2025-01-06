@@ -1,7 +1,9 @@
 import charmpandas as pd
-from charmpandas.interface import CCSInterface
+from charmpandas.interface import LocalCluster
 
-pd.set_interface(CCSInterface("100.115.92.204", 1234, odf=2))
+cluster = LocalCluster()
+
+pd.set_interface(cluster)
 
 df1 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/test1.parquet")
 df2 = pd.read_parquet("/home/adityapb1546/charm/charmpandas/examples/test2.parquet")

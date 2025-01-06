@@ -8,6 +8,7 @@
 #include <arrow/compute/api.h>
 #include "arrow/acero/exec_plan.h"
 #include <arrow/acero/options.h>
+#include "types.hpp"
 #include "utils.hpp"
 #include "serialize.hpp"
 #include "reduction.decl.h"
@@ -107,7 +108,7 @@ std::string get_aggregation_function(AggregateOperation op)
     }
 }
 
-arrow::acero::AggregateNodeOptions extract_aggregate_options(char* msg, bool is_local=false)
+arrow::acero::AggregateNodeOptions* extract_aggregate_options(char* msg, bool is_local=false)
 {
     // first extract the keys
     int nkeys = extract<int>(msg);
@@ -137,7 +138,34 @@ arrow::acero::AggregateNodeOptions extract_aggregate_options(char* msg, bool is_
         aggs.push_back({agg_fn, nullptr, is_local ? target_field : result_field, result_field});
     }
 
-    return arrow::acero::AggregateNodeOptions{aggs, keys};
+    arrow::acero::AggregateNodeOptions* opts = new arrow::acero::AggregateNodeOptions{aggs, keys};
+    return opts;
+}
+
+bool is_two_level_agg(arrow::acero::AggregateNodeOptions& opts)
+{
+    for (int i = 0; i < opts.aggregates.size(); i++)
+    {
+        std::string agg_fn = opts.aggregates[i].function;
+
+        if (agg_fn == "hash_count_distinct")
+            return false;
+
+        if (agg_fn == "hash_approximate_median")
+            return false;
+    }
+    return true;
+}
+
+std::string aggregation_callback_fn(std::string &agg_fn)
+{
+    if (agg_fn == "hash_count")
+        return "hash_sum";
+
+    if (agg_fn == "hash_sum")
+        return "hash_sum";
+
+    return "hash_sum";
 }
 
 TablePtr local_aggregation(TablePtr &table, arrow::acero::AggregateNodeOptions &agg_opts)
@@ -147,7 +175,7 @@ TablePtr local_aggregation(TablePtr &table, arrow::acero::AggregateNodeOptions &
     return arrow::acero::DeclarationToTable(std::move(aggregate)).ValueOrDie();
 }
 
-CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
+/*CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
 {
     std::vector<TablePtr> reduction_tables;
     
@@ -189,7 +217,7 @@ CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
 void register_aggregate_reducer()
 {
     AggregateReductionType = CkReduction::addReducer(aggregate_reducer);
-}
+}*/
 
 #include "reduction.def.h"
 #endif

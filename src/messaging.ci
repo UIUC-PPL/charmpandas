@@ -1,0 +1,25 @@
+module messaging
+{
+    message RedistTableMsg
+    {
+        char data[];
+        int sizes[];
+    };
+
+    message GatherTableDataMsg
+    {
+        char data[];
+    };
+
+    message RemoteTableMsg
+    {
+        char data[];
+    };
+
+    message RemoteJoinMsg
+    {
+        char data[];
+    };
+
+    message LocalJoinMsg;
+}

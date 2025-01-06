@@ -1,4 +1,4 @@
 module reduction
 {
-    initnode void register_aggregate_reducer(void);
+    //initnode void register_aggregate_reducer(void);
 }

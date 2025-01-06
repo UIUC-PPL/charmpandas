@@ -6,12 +6,14 @@
 #include <arrow/api.h>
 #include <arrow/table.h>
 #include <arrow/scalar.h>
+#include <arrow/compute/api.h>
+#include "types.hpp"
 
-using TablePtr = std::shared_ptr<arrow::Table>;
-using ArrayPtr = std::shared_ptr<arrow::Array>;
-using ScalarPtr = std::shared_ptr<arrow::Scalar>;
-using ChunkedArrayPtr = std::shared_ptr<arrow::ChunkedArray>;
-using BufferPtr = std::shared_ptr<arrow::Buffer>;
+enum class RedistOperation : int
+{
+    Join = 0,
+    GroupBy = 1
+};
 
 enum class Operation : int
 {
@@ -22,7 +24,10 @@ enum class Operation : int
     Join = 4,
     Print = 5,
     Concat = 6,
-    Filter = 7
+    Filter = 7,
+    Rescale = 8,
+    Skip = 9,
+    FetchSize = 10
 };
 
 template<class T>
@@ -37,6 +42,28 @@ inline T extract(char* &msg, bool increment=true)
 inline Operation lookup_operation(int opcode)
 {
     return static_cast<Operation>(opcode);
+}
+
+inline TablePtr sort_table(TablePtr table, std::string col_name)
+{
+    arrow::compute::SortOptions sort_options;
+    sort_options.sort_keys = {
+        arrow::compute::SortKey(col_name, arrow::compute::SortOrder::Ascending)
+    };
+
+    // Compute the sort indices
+    ArrayPtr indices = arrow::compute::SortIndices(arrow::Datum(table), sort_options).ValueOrDie();
+
+
+    // Get the sorted table
+    return arrow::compute::Take(table, indices).ValueOrDie().table();
+}
+
+inline ChunkedArrayPtr array_from_vector(std::vector<int> &indices)
+{
+    arrow::Int32Builder builder;
+    builder.AppendValues(indices.data(), indices.size());
+    return arrow::ChunkedArray::Make({builder.Finish().ValueOrDie()}).ValueOrDie();
 }
 
 #endif

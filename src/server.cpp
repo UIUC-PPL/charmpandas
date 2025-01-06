@@ -5,31 +5,43 @@
 #include "server.decl.h"
 
 
-class Main : public CBase_Main
+Main::Main(CkArgMsg* msg) 
 {
-public:
-    Main(CkArgMsg* msg) 
-    {
-        Server::initialize();
-        register_handlers();
-        agg_proxy = CProxy_Aggregator::ckNew();
+    partition_ptr = &partition;
+    register_handlers();
+    agg_proxy = CProxy_Aggregator::ckNew(thisProxy);
 #ifndef NDEBUG
-        CkPrintf("Initialization done\n");
+    CkPrintf("Initialization done\n");
 #endif
-    }
+}
 
-    void register_handlers()
-    {
-        CcsRegisterHandler("connect", (CmiHandler) Server::connection_handler);
-        CcsRegisterHandler("disconnect", (CmiHandler) Server::disconnection_handler);
-        CcsRegisterHandler("sync", (CmiHandler) Server::sync_handler);
-        CcsRegisterHandler("async", (CmiHandler) Server::async_handler);
-        //CcsRegisterHandler("aum_operation", (CmiHandler) Server::operation_handler);
-        //CcsRegisterHandler("aum_sync", (CmiHandler) Server::sync_handler);
-        //CcsRegisterHandler("aum_fetch", (CmiHandler) Server::fetch_handler);
-        //CcsRegisterHandler("aum_delete", (CmiHandler) Server::delete_handler);
-        //CcsRegisterHandler("aum_exit", (CmiHandler) Server::exit_server);
-    }
-};
+Main::Main(CkMigrateMessage *m) : CBase_Main(m)
+{
+    partition_ptr = &partition;
+    register_handlers();
+}
+
+void Main::pup(PUP::er &p)
+{
+    p | partition;
+}
+
+void Main::register_handlers()
+{
+    CcsRegisterHandler("connect", (CmiHandler) Server::connection_handler);
+    CcsRegisterHandler("disconnect", (CmiHandler) Server::disconnection_handler);
+    CcsRegisterHandler("sync", (CmiHandler) Server::sync_handler);
+    CcsRegisterHandler("async", (CmiHandler) Server::async_handler);
+    CcsRegisterHandler("async_group", (CmiHandler) Server::async_group_handler);
+    CcsRegisterHandler("rescale", (CmiHandler) Server::rescale_handler);
+}
+
+void Main::init_done()
+{
+    bool reply = true;
+    partition_ptr->poll();
+    agg_proxy.poll();
+    CcsSendDelayedReply(creation_reply, 1, (void*) &reply);
+}
 
 #include "server.def.h"

@@ -1,43 +1,47 @@
 module partition
 {
     extern module reduction;
+    extern module messaging;
 
-    message GatherTableDataMsg
+    mainchare [migratable] Main
     {
-        char data[];
+        entry Main(CkArgMsg*);
+
+        entry void init_done();
     };
 
-    message JoinTableDataMsg
+    group [migratable] Aggregator
     {
-        char data[];
-        char left_keys[];
-        char right_keys[];
-        int lkey_sizes[];
-        int rkey_sizes[];
-    };
+        entry Aggregator(CProxy_Main);
 
-    group Aggregator
-    {
-        entry Aggregator();
+        entry [reductiontarget] void init_done();
 
         entry void gather_table(GatherTableDataMsg* msg);
-    }
 
-    array [1D] Partition
-    {
-        entry Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy);
+        entry void deposit_size(int partition, int local_size);
 
         entry void receive_command(int epoch, int size, char cmd[size]);
 
-        entry [nokeep] void remote_join(JoinTableDataMsg* msg);
-
-        entry void listen_remote_join()
+        entry void poll()
         {
-            when remote_join[EPOCH] (JoinTableDataMsg* msg)
-                serial "remote join" {
-                    process_remote_join(msg);
+            when receive_command[EPOCH] (int epoch, int size, char cmd[size])
+                serial "execute command" {
+                    execute_command(epoch, size, cmd);
                 }
-        }
+        };
+
+        entry [reductiontarget] void assign_keys(int num_elements, int global_hist[num_elements]);
+        
+        entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
+
+        entry void receive_shuffle_data(RedistTableMsg* msg);
+    };
+
+    array [1D] Partition
+    {
+        entry Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_);
+
+        entry void receive_command(int epoch, int size, char cmd[size]);
 
         entry [reductiontarget] void aggregate_result(CkReductionMsg* msg);
 
