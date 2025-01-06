@@ -1186,6 +1186,7 @@ void Aggregator::complete_operation()
 void Aggregator::complete_groupby()
 {
     CkPrintf("PE%i> Completed groupby\n", CkMyPe());
+    tables.erase(groupby_opts->table_name);
     delete groupby_opts->opts;
     delete groupby_opts;
     groupby_opts = nullptr;
@@ -1204,6 +1205,8 @@ void Aggregator::complete_groupby()
 void Aggregator::complete_join()
 {
     CkPrintf("PE%i> Completed join\n", CkMyPe());
+    tables.erase(join_opts->table1);
+    tables.erase(join_opts->table2);
     delete join_opts->opts;
     delete join_opts;
     join_opts = nullptr;
