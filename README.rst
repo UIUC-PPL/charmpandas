@@ -1,5 +1,21 @@
-charmstencil
+charmpandas
 ============
 
-A python library for distributed stencil computations
+A python library for distributed data analytics
 
+Installation
+------------
+
+1. Install pyccs. You can find the instructions here - https://github.com/charmplusplus/PyCCS
+
+2. Install arrow. The instructions are here - https://arrow.apache.org/install/
+
+3. Install charmpandas
+
+```
+git clone https://github.com/adityapb/charmpandas.git
+cd charmpandas/src
+make -j6
+cd ..
+python setup.py install
+```
