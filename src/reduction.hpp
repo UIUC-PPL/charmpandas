@@ -142,10 +142,26 @@ arrow::acero::AggregateNodeOptions* extract_aggregate_options(char* msg, bool is
     return opts;
 }
 
+bool is_two_level_agg(arrow::acero::AggregateNodeOptions& opts)
+{
+    for (int i = 0; i < opts.aggregates.size(); i++)
+    {
+        std::string agg_fn = opts.aggregates[i].function;
+
+        if (agg_fn == "hash_count_distinct")
+            return false;
+
+        if (agg_fn == "hash_approximate_median")
+            return false;
+    }
+    return true;
+}
+
 std::string aggregation_callback_fn(std::string &agg_fn)
 {
     if (agg_fn == "hash_count")
         return "hash_sum";
+
     if (agg_fn == "hash_sum")
         return "hash_sum";
 

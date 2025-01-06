@@ -447,7 +447,7 @@ void Partition::execute_command(int epoch, int size, char* cmd)
             break;
     }
 
-    CkPrintf("Chare %i> Memory usage = %f MB\n", thisIndex, ((double) calculate_memory_usage()) / (1024 * 1024));
+    //CkPrintf("Chare %i> Memory usage = %f MB\n", thisIndex, ((double) calculate_memory_usage()) / (1024 * 1024));
 }
 
 arrow::Datum Partition::extract_operand(char* &msg)
@@ -759,9 +759,12 @@ void Aggregator::operation_groupby(char* cmd)
     TablePtr local_table = get_local_table(table_name);
     tables[table_name] = local_table;
 
-    TablePtr result = nullptr;
-    if (local_table != nullptr)
-        result = local_aggregation(local_table, *agg_opts);
+    TablePtr result = local_table;
+    if (is_two_level_agg(*agg_opts))
+    {
+        if (local_table != nullptr)
+            result = local_aggregation(local_table, *agg_opts);
+    }
 
     tables[TEMP_TABLE_OFFSET + next_temp_name] = result;
     auto redist_keys = std::vector<std::vector<arrow::FieldRef>>{agg_opts->keys};
@@ -1097,12 +1100,15 @@ void Aggregator::redist_callback()
 void Aggregator::groupby_callback()
 {
     // update groupby options
-    for (int i = 0; i < groupby_opts->opts->aggregates.size(); i++)
+    if (is_two_level_agg(*groupby_opts->opts))
     {
-        groupby_opts->opts->aggregates[i].function = aggregation_callback_fn(
-            groupby_opts->opts->aggregates[i].function);
-        groupby_opts->opts->aggregates[i].target = std::vector<arrow::FieldRef>{
-            arrow::FieldRef(groupby_opts->opts->aggregates[i].name)};
+        for (int i = 0; i < groupby_opts->opts->aggregates.size(); i++)
+        {
+            groupby_opts->opts->aggregates[i].function = aggregation_callback_fn(
+                groupby_opts->opts->aggregates[i].function);
+            groupby_opts->opts->aggregates[i].target = std::vector<arrow::FieldRef>{
+                arrow::FieldRef(groupby_opts->opts->aggregates[i].name)};
+        }
     }
 
     TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
