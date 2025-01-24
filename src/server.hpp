@@ -90,6 +90,18 @@ public:
         partition_ptr->receive_command(epoch, size, cmd);
     }
 
+
+    static void barrier_handler(char* msg)
+    {
+        char* cmd = msg + CmiMsgHeaderSizeBytes;
+        int epoch_chare = extract<int>(cmd);
+        int epoch_group = extract<int>(cmd);
+        int size = extract<int>(cmd);
+        fetch_reply[epoch_chare] = CcsDelayReply();
+        partition_ptr->receive_command(epoch_chare, size, cmd);
+        agg_proxy.receive_command(epoch_group, size, cmd);
+    }
+
     static void create_partition(int odf, int lb_period)
     {
     

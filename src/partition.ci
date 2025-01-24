@@ -35,6 +35,13 @@ module partition
         entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
         entry void receive_shuffle_data(RedistTableMsg* msg);
+
+        //entry [reductiontarget] void partition_barrier(int partition_epoch);
+
+        //entry [reductiontarget] void aggregator_barrier(int agg_epoch);
+
+        template <typename T>
+        entry void reduction_result(T result, int epoch);
     };
 
     array [1D] Partition
@@ -52,5 +59,8 @@ module partition
                     execute_command(epoch, size, cmd);
                 }
         };
+
+        template <typename T>
+        entry [reductiontarget] void reduction_result(T result);
     };
 }

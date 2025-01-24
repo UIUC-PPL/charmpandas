@@ -47,6 +47,10 @@ class Operations(object):
     concat = 6
     filter = 7
     rescale = 8
+    skip = 9
+    fetch_size = 10
+    barrier = 11
+    reduction = 12
 
 
 class GroupByOperations(object):
@@ -297,6 +301,21 @@ class CCSInterface(Interface):
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
         self.send_command_async(Handlers.async_handler, cmd)
+
+    def reduction(self, name, field, op):
+        self.activity_handler()
+        cmd = self.get_header(self.epoch)
+
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.reduction, 'i')
+        gcmd += to_bytes(name, 'i')
+        gcmd += string_bytes(field)
+        gcmd += to_bytes(op, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+
+        return self.send_command(Handlers.sync_handler, cmd)
 
     def rescale(self, new_procs):
         cmd = to_bytes(self.epoch, 'i')
