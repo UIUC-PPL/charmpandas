@@ -12,10 +12,14 @@ Installation
 
 3. Install arrow. The instructions are here - https://arrow.apache.org/install/
 
-4. Install charmpandas::
+4. Install xxhash. Follow these instructions - https://github.com/Cyan4973/xxHash?tab=readme-ov-file#building-xxhash---using-vcpkg
+
+5. Install charmpandas::
 
     git clone https://github.com/adityapb/charmpandas.git
     cd charmpandas/src
+    export CHARMDIR=<charm++ home directory>
+    export XXHASH_DIR=<xxhash home directory>
     make -j6
     cd ..
     python setup.py install
