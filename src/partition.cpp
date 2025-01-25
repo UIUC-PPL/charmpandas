@@ -10,7 +10,7 @@
 #include "messaging.def.h"
 #include "partition.def.h"
 
-#define MEM_LOGGING true
+#define MEM_LOGGING false
 #define MEM_LOG_DURATION 100
 
 #define TEMP_TABLE_OFFSET (1 << 30)

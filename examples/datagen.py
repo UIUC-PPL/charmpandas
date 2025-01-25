@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from random import shuffle, randint
 
-n = 8000000
+n = 1000000
 
 first_names = np.array(["A%i" % i for i in range(n)])
 last_names = np.array(["B%i" % i for i in range(n)])
