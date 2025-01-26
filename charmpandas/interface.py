@@ -7,6 +7,8 @@ import asyncio
 import re
 from pyccs import Server
 
+import nest_asyncio
+nest_asyncio.apply()
 
 def to_bytes(value, dtype='I'):
     return struct.pack(dtype, value)
@@ -131,7 +133,7 @@ class DebugInterface(Interface):
 
     def fetch_table(self, table_name):
         pass
-    
+
 
 class CCSInterface(Interface):
     def __init__(self, server_ip, server_port, odf=4, lb_period=5, activity_timeout=60):
@@ -156,21 +158,21 @@ class CCSInterface(Interface):
 
     def get_header(self, epoch):
         return to_bytes(epoch, 'i')
-    
+
     def get_deletion_header(self):
         cmd = to_bytes(len(self.deletion_buffer), 'i')
         for table in self.deletion_buffer:
             cmd += to_bytes(table, 'i')
         self.deletion_buffer = []
         return cmd
-    
+
     def mark_deletion(self, table_name):
         self.deletion_buffer.append(table_name)
 
     def read_parquet(self, table_name, file_path):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
-        
+
         gcmd = self.get_deletion_header()
         gcmd += to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -254,7 +256,7 @@ class CCSInterface(Interface):
         gcmd += to_bytes(result_name, 'i')
 
         opts_cmd = to_bytes(len(keys), 'i')
-        
+
         for key in keys:
             opts_cmd += string_bytes(key)
 
@@ -305,7 +307,7 @@ class CCSInterface(Interface):
         cmd = to_bytes(self.epoch, 'i')
 
         cmd += to_bytes(new_procs, 'i')
-        
+
         gcmd = self.get_deletion_header()
         gcmd += to_bytes(Operations.rescale, 'i')
 
@@ -318,7 +320,7 @@ class CCSInterface(Interface):
         self.epoch += 1
         self.server.send_request(handler, 0, msg)
         return self.server.receive_response(reply_size)
-    
+
     def send_command_raw_var(self, handler, msg):
         self.epoch += 1
         self.server.send_request(handler, 0, msg)
@@ -382,15 +384,15 @@ class LocalCluster(CCSInterface):
     def _run_server(self):
         self.process = subprocess.Popen(['/home/adityapb1546/charm/charmpandas/src/charmrun +p%i '
                                 '/home/adityapb1546/charm/charmpandas/src/server.out +balancer MetisLB +LBDebug 3'
-                                ' ++server ++server-port 1234 ++nodelist ./localnodelist' % self.max_pes], 
+                                ' ++server ++server-port 1234 ++nodelist ./localnodelist' % self.max_pes],
                                 shell=True, text=True, stdout=self.logfile, stderr=subprocess.STDOUT)
         time.sleep(5)
         self.current_pes = self.max_pes
-        
+
 
 class SLURMCluster(CCSInterface):
     def __init__(self, account_name, partition_name, charmpandas_dir,
-                 min_nodes=1, max_nodes=1, odf=4, 
+                 min_nodes=1, max_nodes=1, odf=4,
                  tasks_per_node=1, activity_timeout=60,
                  job_name="charmpandas_server"):
         self.charmpandas_dir = charmpandas_dir
@@ -436,7 +438,7 @@ class SLURMCluster(CCSInterface):
 
     def expand(self, nnodes):
         # expand with self.expand_callback as callback
-        with open("%s/src/server_job.sbatch" % self.charmpandas_dir, "rb") as f:
+        with open("%s/src/server_job.sbatch" % self.charmpandas_dir, "r") as f:
             template = f.read()
 
         job_scripts = []
@@ -456,36 +458,36 @@ class SLURMCluster(CCSInterface):
             # Convert single job ID to list if needed
             if isinstance(job_ids, str):
                 job_ids = [job_ids]
-            
+
             # Use subprocess to run scancel command
             result = subprocess.run(
-                ['scancel'] + job_ids, 
-                capture_output=True, 
-                text=True, 
+                ['scancel'] + job_ids,
+                capture_output=True,
+                text=True,
                 check=True
             )
-            
+
             return True
-        
+
         except subprocess.CalledProcessError as e:
             print(f"Error cancelling jobs: {e}")
             return False
 
-    def _extract_ip_address(text):
+    def _extract_ip_address(self, text):
         # Comprehensive IP address regex pattern
         ip_pattern = r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
-        
+
         # Find all IP addresses in the text
         ip_addresses = re.findall(ip_pattern, text)
         assert len(ip_addresses) == 1
-        
+
         return ip_addresses[0]
 
     def _run_server(self):
         # write sbatch file and submit
-        with open("server_job.sbatch", "rb") as f:
+        with open("%s/src/server_job.sbatch" % self.charmpandas_dir, "r") as f:
             template = f.read()
-        
+
         print("Submitting jobs to SLURM cluster")
         job_scripts = []
         for i in range(self.min_nodes):
@@ -501,26 +503,30 @@ class SLURMCluster(CCSInterface):
         self.job_ids = loop.run_until_complete(self._submit_jobs(job_scripts))
 
         self._write_nodelist(self.job_ids)
+        time.sleep(2)
 
-        self.process = subprocess.Popen(['%s/src/charmrun +p%i '
+        self.process = subprocess.Popen(['LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/u/bhosale/.conda/envs/charmpandas/lib %s/src/charmrun +p%i '
                                 '%s/src/server.out +balancer MetisLB +LBDebug 3 '
                                 '++server ++server-port 1234 ++nodelist ./slurmnodelist' % (
-                                    self.charmpandas_dir, self.charmpandas_dir, 
-                                    self.min_nodes * self.tasks_per_node)],
+                                    self.charmpandas_dir,
+                                    self.min_nodes * self.tasks_per_node,
+                                    self.charmpandas_dir)],
                                 shell=True, text=True, stdout=self.logfile, stderr=subprocess.STDOUT)
-        
+
         while True:
             time.sleep(2)
-            with open(self.logfile, "r") as f:
+            with open("server.log", "r") as f:
                 lines = f.readlines()
                 if lines[-1].strip().replace('\n', '') == "CharmLB> MetisLB created.":
                     self.server_ip = self._extract_ip_address(lines[2])
                     break
-        
+
         self.current_nodes = self.min_nodes
 
     def _get_nodelist(self, nodes):
         node_nums = []
+        if nodes.find('[') == -1:
+            return [nodes]
         prefix = nodes[:nodes.find('[')]
         node_nums = nodes[nodes.find('[')+1:-1].split(',')
         filtered_nodes = []
@@ -539,9 +545,9 @@ class SLURMCluster(CCSInterface):
     def _write_nodelist(self, job_ids):
         for job_id in job_ids:
             result = subprocess.run(
-                ['squeue', '-j', job_id, '-o', '%N'], 
-                capture_output=True, 
-                text=True, 
+                ['squeue', '-j', job_id, '-o', '%N'],
+                capture_output=True,
+                text=True,
                 check=True
             )
 
@@ -562,9 +568,9 @@ class SLURMCluster(CCSInterface):
             script_filename = "%s_job_%i.sbatch" % (self.job_name, idx)
             with open(script_filename, "w") as f:
                 f.write(script)
-                
+
             proc = await asyncio.create_subprocess_shell(
-                f'sbatch {script_filename}', 
+                f'sbatch {script_filename}',
                 stdout=subprocess.PIPE
             )
             stdout, _ = await proc.communicate()
@@ -572,10 +578,10 @@ class SLURMCluster(CCSInterface):
             job_ids.append(job_id)
 
         await self._monitor_jobs(job_ids)
-        
+
         if callback:
             callback(job_ids)
-        
+
         return job_ids
 
     async def _monitor_jobs(self, job_ids):
@@ -591,14 +597,14 @@ class SLURMCluster(CCSInterface):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
-            
+
             stdout, _ = await proc.communicate()
             job_status = stdout.decode().split('\n')[1].strip() if len(stdout.decode().split('\n')) > 1 else ''
-            
+
             if job_status == 'RUNNING':
                 return True
-            
+
             if job_status in ['COMPLETED', 'FAILED', 'CANCELLED']:
                 raise RuntimeError(f"Job {job_id} terminated with status: {job_status}")
-            
+
             await asyncio.sleep(poll_interval)

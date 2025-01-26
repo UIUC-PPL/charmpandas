@@ -1,7 +1,7 @@
 #CHARMDIR=/home/adityapb1546/charm/charm
 CHARMC=$(CHARMDIR)/netlrts-linux-x86_64/bin/charmc
 CHARM_INC=-I$(CHARMDIR)/include
-OPTS=-c++-option -std=c++17 -O3 -g -ldl -DNDEBUG -I$(XXHASH_DIR)/include
+OPTS=-c++-option -std=c++17 -O3 -g -ldl -DNDEBUG -I$(VCPKG_DIR)/include -I$(XXHASH_DIR)/include
 
 all: server.out
 
@@ -37,7 +37,7 @@ partition.o: partition.cpp partition.decl.h partition.def.h reduction.decl.h red
 	$(CHARMC) `pkg-config --cflags --libs arrow` -module CommonLBs -c $< $(OPTS)
 
 server.out: partition.o server.o
-	$(CHARMC) `pkg-config --cflags --libs arrow` -L$(XXHASH_DIR)/lib -g -lxxhash -lparquet -larrow_acero -language charm++ -module CommonLBs -o $@ partition.o server.o
+	$(CHARMC) -Wl,-rpath,/u/bhosale/.conda/envs/charmpandas/lib `pkg-config --cflags --libs arrow` -L$(XXHASH_DIR)/lib -g -lxxhash -lparquet -larrow_acero -language charm++ -module CommonLBs -o $@ partition.o server.o
 
 run-server: server.out
 	./charmrun +p4 ./server.out ++server ++server-port 10000
