@@ -1135,9 +1135,13 @@ void Aggregator::groupby_callback()
         }
     }
 
-    TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
-    result = clean_metadata(result);
-    partition_table(result, groupby_opts->result_name);
+    if (tables[TEMP_TABLE_OFFSET + next_temp_name] != nullptr && tables[TEMP_TABLE_OFFSET + next_temp_name]->num_rows() > 0)
+    {
+        TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
+        result = clean_metadata(result);
+        partition_table(result, groupby_opts->result_name);
+    }
+    
     complete_groupby();
 }
 
@@ -1264,6 +1268,8 @@ void Aggregator::partition_table(TablePtr table, int result_name)
     int offset = 0;
     for (int i = 0; i < num_local_chares; i++)
     {
+        if (remain_rows == 0)
+            return;
         int index = local_chares[i];
         Partition* partition = partition_proxy[index].ckLocal();
         int rows_per_chare = remain_rows / remain_chares;
