@@ -101,7 +101,6 @@ private:
     std::unordered_map<int, std::vector<GatherTableDataMsg*>> gather_buffer;
 
     std::vector<int> local_chares;
-    std::unordered_set<int> local_chares_set;
 
     // for joins
     int num_local_chares;
@@ -139,6 +138,8 @@ public:
     void init_done();
 
     TablePtr get_local_table(int table_name);
+
+    void clear_local_chares();
 
     void register_local_chare(int index);
 
@@ -190,6 +191,8 @@ public:
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
 
     void partition_table(TablePtr table, int result_name);
+
+    void start_polling();
 };
 
 

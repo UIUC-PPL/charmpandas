@@ -39,6 +39,7 @@ Partition::Partition(CkMigrateMessage* m)
     usesAtSync = true;
     //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
     //thisProxy[thisIndex].poll();
+
 }
 
 Partition::~Partition()
@@ -55,11 +56,19 @@ void Partition::pup(PUP::er &p)
     p | EPOCH;
     p | lb_period;
     pup_tables(p);
-    if (p.isUnpacking())
+    /*if (p.isPacking())
     {
-        CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
-        thisProxy[thisIndex].poll();
+        // deregister this chare with the aggregator
+        if (agg_proxy.ckLocalBranch() != NULL)
+            agg_proxy.ckLocalBranch()->deregister_local_chare(thisIndex);
     }
+    else if (p.isUnpacking())
+    {
+        // Register local chares with the aggregator
+        agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
+        //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
+        //thisProxy[thisIndex].poll();
+    }*/
 }
 
 void Partition::pup_tables(PUP::er &p)
@@ -155,8 +164,12 @@ inline void Partition::inc_epoch()
 
 void Partition::ResumeFromSync()
 {
-    //CkPrintf("Resume called\n");
-    thisProxy[thisIndex].poll();
+    CkPrintf("Resume called\n");
+    agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
+
+    int done = 1;
+    CkCallback cb(CkReductionTarget(Aggregator, start_polling), agg_proxy[0]);
+    contribute(sizeof(int), &done, CkReduction::sum_int, cb);
 }
 
 TablePtr Partition::get_table(int table_name)
@@ -427,6 +440,7 @@ void Partition::execute_command(int epoch, int size, char* cmd)
         {
             //CkPrintf("Rescale\n");
             ++EPOCH;
+            agg_proxy.ckLocalBranch()->clear_local_chares();
             AtSync();
             break;
         }
@@ -612,6 +626,7 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
         , redist_odf(8)
         , expected_rows(0)
         , EPOCH(0)
+        , next_temp_name(0)
 {
     if (MEM_LOGGING)
     {
@@ -623,6 +638,7 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
 Aggregator::Aggregator(CkMigrateMessage* m) 
         : CBase_Aggregator(m)
         , expected_rows(0)
+        , num_local_chares(0)
         , join_opts(nullptr)
         , groupby_opts(nullptr)
 {
@@ -639,6 +655,8 @@ void Aggregator::pup(PUP::er &p)
     p | redist_odf;
     p | next_temp_name;
     p | EPOCH;
+    p | num_partitions;
+    p | partition_proxy;
 }
 
 void Aggregator::init_memory_logging()
@@ -664,11 +682,17 @@ void Aggregator::init_done()
     main_proxy.init_done();
 }
 
+void Aggregator::clear_local_chares()
+{
+    num_local_chares = 0;
+    // FIXME this is inefficient, but probably okay
+    local_chares.clear();
+}
+
 void Aggregator::register_local_chare(int index)
 {
     num_local_chares++;
     local_chares.push_back(index);
-    local_chares_set.insert(index);
 }
 
 void Aggregator::gather_table(GatherTableDataMsg* msg)
@@ -922,7 +946,7 @@ void Aggregator::redistribute(std::vector<int> table_names, std::vector<std::vec
     redist_operation = oper;
     for (int i = 0; i < table_names.size(); i++)
     {
-        if (tables[table_names[i]] != nullptr)
+        if (tables[table_names[i]] != nullptr && tables[table_names[i]]->num_rows() > 0)
             tables[table_names[i]] = map_keys(tables[table_names[i]], keys[i]);
     }
 
@@ -1248,4 +1272,11 @@ void Aggregator::partition_table(TablePtr table, int result_name)
         remain_rows -= rows_per_chare;
         remain_chares--;
     }
+}
+
+void Aggregator::start_polling()
+{
+    CkPrintf("Resume polling\n");
+    thisProxy.poll();
+    partition_proxy.poll();
 }

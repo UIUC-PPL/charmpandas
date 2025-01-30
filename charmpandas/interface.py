@@ -5,6 +5,7 @@ import threading
 import time
 import asyncio
 import re
+import hostlist
 from pyccs import Server
 
 import nest_asyncio
@@ -523,25 +524,6 @@ class SLURMCluster(CCSInterface):
 
         self.current_nodes = self.min_nodes
 
-    def _get_nodelist(self, nodes):
-        node_nums = []
-        if nodes.find('[') == -1:
-            return [nodes]
-        prefix = nodes[:nodes.find('[')]
-        node_nums = nodes[nodes.find('[')+1:-1].split(',')
-        filtered_nodes = []
-        for i, node_num in enumerate(node_nums):
-            if '-' in node_num:
-                left, right = node_num.split('-')
-                for n in range(int(left), int(right) + 1):
-                    nodeid_str = str(n)
-                    if len(nodeid_str) < len(left):
-                        nodeid_str = '0' * (len(left) - len(nodeid_str)) + nodeid_str
-                    filtered_nodes.append("%s%s" % (prefix, nodeid_str))
-            else:
-                filtered_nodes.append("%s%s" % (prefix, node_num))
-        return filtered_nodes
-
     def _write_nodelist(self, job_ids):
         for job_id in job_ids:
             result = subprocess.run(
@@ -552,7 +534,7 @@ class SLURMCluster(CCSInterface):
             )
 
             nodes = result.stdout.strip().split('\n')[1]
-            nodelist = self._get_nodelist(nodes)
+            nodelist = hostlist.expand_hostlist(nodes)
 
         nodestr = ""
         for node in nodelist:

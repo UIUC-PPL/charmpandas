@@ -35,6 +35,8 @@ module partition
         entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
         entry void receive_shuffle_data(RedistTableMsg* msg);
+
+        entry [reductiontarget] void start_polling();
     };
 
     array [1D] Partition
@@ -45,7 +47,7 @@ module partition
 
         entry [reductiontarget] void aggregate_result(CkReductionMsg* msg);
 
-        entry void poll()
+        entry [reductiontarget] void poll()
         {
             when receive_command[EPOCH] (int epoch, int size, char cmd[size])
                 serial "execute command" {
