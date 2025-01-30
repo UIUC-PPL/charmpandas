@@ -415,12 +415,13 @@ class SLURMCluster(CCSInterface):
 
     def inactivity_handler(self):
         if self.min_nodes != self.max_nodes:
-            self.rescale(self.min_nodes)
+            self.rescale(self.min_nodes * self.tasks_per_node)
+            self._write_nodelist(self.job_ids[:self.min_nodes])
             self.shrink(self.min_nodes)
             self.current_nodes = self.min_nodes
 
     def activity_handler(self):
-        if self.current_nodes == self.min_nodes and self.min_nodes != self.max_nodes:
+        if self.current_nodes < self.max_nodes:
             self.expand(self.max_nodes)
 
     def expand_callback(self, job_ids):
@@ -429,7 +430,7 @@ class SLURMCluster(CCSInterface):
         self._write_nodelist(self.job_ids)
 
         # then expand the application
-        self.rescale(self.max_nodes)
+        self.rescale(self.max_nodes * self.tasks_per_node)
         self.current_nodes = self.max_nodes
 
     def shrink(self, nnodes):
@@ -443,7 +444,7 @@ class SLURMCluster(CCSInterface):
             template = f.read()
 
         job_scripts = []
-        for i in range(nnodes):
+        for i in range(nnodes - self.current_nodes):
             idx = i + self.current_nodes
             job_scripts.append(template.format(job_name="%s_%i" % (self.job_name, idx),
                                                account_name=self.account_name,
