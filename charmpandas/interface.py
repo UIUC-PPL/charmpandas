@@ -497,7 +497,7 @@ class SLURMCluster(CCSInterface):
             job_scripts.append(template.format(job_name="%s_%i" % (self.job_name, idx),
                                                account_name=self.account_name,
                                                partition_name=self.partition_name,
-                                               num_nodes=self.min_nodes,
+                                               num_nodes=1,
                                                tasks_per_node=self.tasks_per_node,
                                                output_filename="%s_%i.log" % (self.job_name, idx)))
 
@@ -505,7 +505,7 @@ class SLURMCluster(CCSInterface):
         self.job_ids = loop.run_until_complete(self._submit_jobs(job_scripts))
 
         self._write_nodelist(self.job_ids)
-        time.sleep(2)
+        time.sleep(3)
 
         self.process = subprocess.Popen(['LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/u/bhosale/.conda/envs/charmpandas/lib %s/src/charmrun +p%i '
                                 '%s/src/server.out +balancer MetisLB +LBDebug 3 '
@@ -526,6 +526,7 @@ class SLURMCluster(CCSInterface):
         self.current_nodes = self.min_nodes
 
     def _write_nodelist(self, job_ids):
+        nodelist = []
         for job_id in job_ids:
             result = subprocess.run(
                 ['squeue', '-j', job_id, '-o', '%N'],
@@ -535,7 +536,7 @@ class SLURMCluster(CCSInterface):
             )
 
             nodes = result.stdout.strip().split('\n')[1]
-            nodelist = hostlist.expand_hostlist(nodes)
+            nodelist += hostlist.expand_hostlist(nodes)
 
         nodestr = ""
         for node in nodelist:
