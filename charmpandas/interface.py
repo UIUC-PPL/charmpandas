@@ -462,6 +462,7 @@ class SLURMCluster(CCSInterface):
                                                tasks_per_node=self.tasks_per_node,
                                                output_filename="%s_%i.log" % (self.job_name, idx)))
 
+        self.expand_in_progress = True
         asyncio.create_task(self._submit_jobs(job_scripts, callback=self.expand_callback))
 
     def _kill_jobs(self, job_ids):
