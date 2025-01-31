@@ -487,12 +487,12 @@ class SLURMCluster(CCSInterface):
 
     def _run_server(self):
         # write sbatch file and submit
-        with open("%s/src/server_job.sbatch" % self.charmpandas_dir, "r") as f:
+        with open("%s/src/worker_job.sbatch" % self.charmpandas_dir, "r") as f:
             template = f.read()
 
         print("Submitting jobs to SLURM cluster")
         job_scripts = []
-        for i in range(self.min_nodes):
+        for i in range(self.min_nodes - 1):
             idx = i + self.current_nodes
             job_scripts.append(template.format(job_name="%s_%i" % (self.job_name, idx),
                                                account_name=self.account_name,
@@ -504,20 +504,27 @@ class SLURMCluster(CCSInterface):
         loop = asyncio.get_event_loop()
         self.job_ids = loop.run_until_complete(self._submit_jobs(job_scripts))
 
-        self._write_nodelist(self.job_ids)
-        time.sleep(3)
+        # now write the job script for the driver job
+        with open("%s/src/driver_job.sbatch" % self.charmpandas_dir, "r") as f:
+            template = f.read()
 
-        self.process = subprocess.Popen(['LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/u/bhosale/.conda/envs/charmpandas/lib %s/src/charmrun +p%i '
-                                '%s/src/server.out +balancer MetisLB +LBDebug 3 '
-                                '++server ++server-port 1234 ++nodelist ./slurmnodelist' % (
-                                    self.charmpandas_dir,
-                                    self.min_nodes * self.tasks_per_node,
-                                    self.charmpandas_dir)],
-                                shell=True, text=True, stdout=self.logfile, stderr=subprocess.STDOUT)
+        driver_script = template.format(job_name="%s_driver" % self.job_name,
+                                        account_name=self.account_name,
+                                        partition_name=self.partition_name,
+                                        num_nodes=1,
+                                        tasks_per_node=self.tasks_per_node,
+                                        output_filename="%s_driver.log" % self.job_name,
+                                        base_dir=self.charmpandas_dir,
+                                        num_pes=self.min_nodes * self.tasks_per_node)
+        
+        loop = asyncio.get_event_loop()
+        self.job_ids = loop.run_until_complete(self._submit_jobs([driver_script])) + self.job_ids
+
+        self._write_nodelist(self.job_ids)
 
         while True:
             time.sleep(2)
-            with open("server.log", "r") as f:
+            with open("%s_driver.log" % self.job_name, "r") as f:
                 lines = f.readlines()
                 if lines[-1].strip().replace('\n', '') == "CharmLB> MetisLB created.":
                     self.server_ip = self._extract_ip_address(lines[2])
@@ -546,6 +553,9 @@ class SLURMCluster(CCSInterface):
             f.write(nodestr)
 
     async def _submit_jobs(self, scripts, callback=None):
+        if len(scripts) == 0:
+            return []
+        
         job_ids = []
         for i, script in enumerate(scripts):
             idx = i + self.current_nodes
