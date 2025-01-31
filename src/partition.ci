@@ -36,6 +36,13 @@ module partition
 
         entry void receive_shuffle_data(RedistTableMsg* msg);
 
+        //entry [reductiontarget] void partition_barrier(int partition_epoch);
+
+        //entry [reductiontarget] void aggregator_barrier(int agg_epoch);
+
+        template <typename T>
+        entry void reduction_result(T result, int epoch);
+
         entry [reductiontarget] void start_polling();
     };
 
@@ -54,5 +61,8 @@ module partition
                     execute_command(epoch, size, cmd);
                 }
         };
+
+        template <typename T>
+        entry [reductiontarget] void reduction_result(T result);
     };
 }

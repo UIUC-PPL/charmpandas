@@ -14,4 +14,18 @@ using ScalarPtr = std::shared_ptr<arrow::Scalar>;
 using ChunkedArrayPtr = std::shared_ptr<arrow::ChunkedArray>;
 using BufferPtr = std::shared_ptr<arrow::Buffer>;
 
+enum class AggregateOperation : int
+{
+    Sum = 0,
+    Count = 1,
+    All = 2,
+    Any = 3,
+    ApproximateMedian = 4,
+    CountDistinct = 5,
+    Distinct = 6,
+    First = 7,
+    Last = 8,
+    FirstLast = 9
+};
+
 #endif

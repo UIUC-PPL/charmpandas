@@ -27,7 +27,9 @@ enum class Operation : int
     Filter = 7,
     Rescale = 8,
     Skip = 9,
-    FetchSize = 10
+    FetchSize = 10,
+    Barrier = 11,
+    Reduction = 12
 };
 
 template<class T>

@@ -26,6 +26,8 @@
 // This needs to have client id in the key
 extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
 
+TablePtr clean_metadata(TablePtr &table);
+
 class JoinOptions
 {
 public:
@@ -166,6 +168,8 @@ public:
 
     void operation_groupby(char* cmd);
 
+    //void operation_barrier(char* cmd);
+
     void execute_command(int epoch, int size, char* cmd);
 
     void start_join();
@@ -180,8 +184,6 @@ public:
 
     void receive_shuffle_data(RedistTableMsg* msg);
 
-    TablePtr clean_metadata(TablePtr &table);
-
     void complete_operation();
 
     void complete_groupby();
@@ -191,6 +193,13 @@ public:
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
 
     void partition_table(TablePtr table, int result_name);
+
+    //void partition_barrier(int partition_epoch);
+
+    //void aggregator_barrier(int agg_epoch);
+
+    template<typename T>
+    void reduction_result(T result, int epoch);
 
     void start_polling();
 };
@@ -257,6 +266,12 @@ public:
 
     void operation_fetch_size(char* cmd);
 
+    //void operation_barrier(char* cmd);
+
+    void operation_reduction(char* cmd);
+
+    ScalarPtr local_reduction(TablePtr& table, std::string& col_name, AggregateOperation& op);
+
     void aggregate_result(CkReductionMsg* msg);
 
     void execute_command(int epoch, int size, char* cmd);
@@ -266,6 +281,12 @@ public:
     arrow::Datum traverse_ast(char* &msg);
 
     void read_parquet(int table_name, std::string file_path);
+
+    template<typename T>
+    void reduce_scalar(ScalarPtr& scalar, AggregateOperation& op);
+
+    template<typename T>
+    void reduction_result(T result);
 };
 
 #endif

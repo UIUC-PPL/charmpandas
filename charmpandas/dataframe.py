@@ -140,6 +140,14 @@ class DataFrameField(object):
     
     def __ne__(self, other):
         return self.binary_op(other, ArrayOperations.not_equal)
+    
+    def count(self):
+        interface = get_interface()
+        return interface.reduction(self.df.name, self.field, GroupByOperations.count)
+
+    def sum(self):
+        interface = get_interface()
+        return interface.reduction(self.df.name, self.field, GroupByOperations.sum)
 
 
 class DataFrame(object):
