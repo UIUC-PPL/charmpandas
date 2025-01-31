@@ -406,7 +406,6 @@ class SLURMCluster(CCSInterface):
         self.tasks_per_node = tasks_per_node
         self.job_name = job_name
         self.server_ip = None
-        self.logfile = open("server.log", "w")
         self.expand_in_progress = False
         self.inactive_flag = False
         self._run_server()
