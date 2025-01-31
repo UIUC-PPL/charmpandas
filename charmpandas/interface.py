@@ -407,6 +407,8 @@ class SLURMCluster(CCSInterface):
         self.job_name = job_name
         self.server_ip = None
         self.logfile = open("server.log", "w")
+        self.expand_in_progress = False
+        self.inactive_flag = False
         self._run_server()
         if self.server_ip != None:
             super().__init__(self.server_ip, 1234, odf=odf, activity_timeout=activity_timeout)
@@ -414,14 +416,16 @@ class SLURMCluster(CCSInterface):
             raise RuntimeError("Error retreiving server IP address")
 
     def inactivity_handler(self):
-        if self.min_nodes != self.max_nodes:
+        if not self.expand_in_progress and self.current_nodes > self.min_nodes:
             self.rescale(self.min_nodes * self.tasks_per_node)
             self._write_nodelist(self.job_ids[:self.min_nodes])
             self.shrink(self.min_nodes)
             self.current_nodes = self.min_nodes
+        elif self.expand_in_progress:
+            self.inactive_flag = True
 
     def activity_handler(self):
-        if self.current_nodes < self.max_nodes:
+        if not self.expand_in_progress and self.current_nodes < self.max_nodes:
             self.expand(self.max_nodes)
 
     def expand_callback(self, job_ids):
@@ -432,6 +436,11 @@ class SLURMCluster(CCSInterface):
         # then expand the application
         self.rescale(self.max_nodes * self.tasks_per_node)
         self.current_nodes = self.max_nodes
+
+        self.expand_in_progress = False
+        if self.inactive_flag:
+            self.reset_timer()
+            self.inactive_flag = False
 
     def shrink(self, nnodes):
         # Shrink to nnodes
