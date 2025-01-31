@@ -440,7 +440,7 @@ class SLURMCluster(CCSInterface):
 
     def expand(self, nnodes):
         # expand with self.expand_callback as callback
-        with open("%s/src/server_job.sbatch" % self.charmpandas_dir, "r") as f:
+        with open("%s/src/worker_job.sbatch" % self.charmpandas_dir, "r") as f:
             template = f.read()
 
         job_scripts = []
@@ -508,6 +508,8 @@ class SLURMCluster(CCSInterface):
         with open("%s/src/driver_job.sbatch" % self.charmpandas_dir, "r") as f:
             template = f.read()
 
+        open("%s_driver.log" % self.job_name, "w").close()
+
         driver_script = template.format(job_name="%s_driver" % self.job_name,
                                         account_name=self.account_name,
                                         partition_name=self.partition_name,
@@ -516,7 +518,7 @@ class SLURMCluster(CCSInterface):
                                         output_filename="%s_driver.log" % self.job_name,
                                         base_dir=self.charmpandas_dir,
                                         num_pes=self.min_nodes * self.tasks_per_node)
-        
+
         loop = asyncio.get_event_loop()
         self.job_ids = loop.run_until_complete(self._submit_jobs([driver_script])) + self.job_ids
 
@@ -526,7 +528,7 @@ class SLURMCluster(CCSInterface):
             time.sleep(2)
             with open("%s_driver.log" % self.job_name, "r") as f:
                 lines = f.readlines()
-                if lines[-1].strip().replace('\n', '') == "CharmLB> MetisLB created.":
+                if len(lines) > 0 and lines[-1].strip().replace('\n', '') == "CharmLB> MetisLB created.":
                     self.server_ip = self._extract_ip_address(lines[2])
                     break
 
@@ -555,7 +557,7 @@ class SLURMCluster(CCSInterface):
     async def _submit_jobs(self, scripts, callback=None):
         if len(scripts) == 0:
             return []
-        
+
         job_ids = []
         for i, script in enumerate(scripts):
             idx = i + self.current_nodes
