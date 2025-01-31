@@ -993,10 +993,10 @@ void Aggregator::assign_keys(int num_elements, int* global_hist)
         pe_loads.push(pe_load);
     }
 
-    CkPrintf("Loads after reshuffling:\n");
+    /*CkPrintf("Loads after reshuffling:\n");
     for (int i = 0; i < CkNumPes(); i++)
         CkPrintf("%i, ", expected_loads[i]);
-    CkPrintf("\n");
+    CkPrintf("\n");*/
 
     thisProxy.shuffle_data(pe_map, expected_loads);
 }
@@ -1148,9 +1148,7 @@ void Aggregator::groupby_callback()
 void Aggregator::join_callback()
 {
     TablePtr result = local_join(tables[join_opts->table1], tables[join_opts->table2], *join_opts->opts);
-    CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
     result = clean_metadata(result);
-    CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
     partition_table(tables[join_opts->table1], join_opts->table1);
     partition_table(tables[join_opts->table2], join_opts->table2);
     partition_table(result, join_opts->result_name);
