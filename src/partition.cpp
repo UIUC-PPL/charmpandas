@@ -223,7 +223,8 @@ void Partition::operation_read(char* cmd)
     int table_name = extract<int>(cmd);
     int path_size = extract<int>(cmd);
     std::string file_path(cmd, path_size);
-    CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
+    if (thisIndex == 0)
+        CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
     read_parquet(table_name, file_path);
     complete_operation();
 }
@@ -615,7 +616,7 @@ void Partition::read_parquet(int table_name, std::string file_path)
     tables[table_name] = set_column(combined, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()));
 
-    CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
+    //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
 }
 
 Aggregator::Aggregator(CProxy_Main main_proxy_)
@@ -1211,7 +1212,7 @@ void Aggregator::complete_operation()
 
 void Aggregator::complete_groupby()
 {
-    CkPrintf("PE%i> Completed groupby\n", CkMyPe());
+    //CkPrintf("PE%i> Completed groupby\n", CkMyPe());
     tables.erase(groupby_opts->table_name);
     delete groupby_opts->opts;
     delete groupby_opts;
@@ -1230,7 +1231,7 @@ void Aggregator::complete_groupby()
 
 void Aggregator::complete_join()
 {
-    CkPrintf("PE%i> Completed join\n", CkMyPe());
+    //CkPrintf("PE%i> Completed join\n", CkMyPe());
     tables.erase(join_opts->table1);
     tables.erase(join_opts->table2);
     delete join_opts->opts;
