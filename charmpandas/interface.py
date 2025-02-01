@@ -33,6 +33,15 @@ def from_bytes(bvalue, dtype='I'):
         return struct.unpack(dtype, bvalue)[0]
 
 
+def decode_type(type_code):
+    if type_code == 7:
+        return 'i'
+    elif type_code == 9:
+        return 'l'
+    elif type_code == 11:
+        return 'f'
+
+
 class Handlers(object):
     connection_handler = b'connect'
     disconnection_handler = b'disconnect'
@@ -320,7 +329,7 @@ class CCSInterface(Interface):
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
 
-        return self.send_command(Handlers.sync_handler, cmd)
+        return self.send_command(Handlers.sync_handler, cmd, reply_type=None)
 
     def rescale(self, new_procs):
         # This should be a sync call
@@ -350,10 +359,17 @@ class CCSInterface(Interface):
     def send_command(self, handler, msg, reply_size=None, reply_type='B', skip_timer=False):
         if not skip_timer:
             self.reset_timer()
+
         if reply_size is None:
-            return from_bytes(self.send_command_raw_var(handler, msg), reply_type)
+            result = self.send_command_raw_var(handler, msg)
         else:
-            return from_bytes(self.send_command_raw(handler, msg, reply_size), reply_type)
+            result = self.send_command_raw(handler, msg, reply_size)
+
+        if reply_type != None:
+            return from_bytes(result, reply_type)
+        else:
+            reply_type = decode_type(from_bytes(result[:4], 'i'))
+            return from_bytes(result[4:], reply_type)
 
     def send_command_async(self, handler, msg, skip_timer=False):
         if not skip_timer:

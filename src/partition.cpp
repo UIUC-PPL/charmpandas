@@ -44,16 +44,56 @@ void Partition::reduce_scalar(ScalarPtr& scalar, AggregateOperation& op)
         CkAbort("Scalar is null");
     }
 
-    auto primitive_scalar = std::static_pointer_cast<arrow::Int32Scalar>(scalar);
-    CkCallback cb(CkReductionTarget(Partition, reduction_result<T>), thisProxy[0]);
-    contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+    switch (scalar->type->id())
+    {
+        case arrow::Type::INT32:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::Int32Scalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_int), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
+        case arrow::Type::INT64:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::Int64Scalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_long), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
+        case arrow::Type::FLOAT:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::FloatScalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_float), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
+        default:
+        {
+            CkAbort("Reduction over unsupported datatype %s\n", scalar->type->ToString().c_str());
+        }
+    }
 }
 
 
-template<typename T>
-void Partition::reduction_result(T result)
+//template<typename T>
+void Partition::reduction_result_int(int result)
 {
-    agg_proxy[0].reduction_result<T>(result, EPOCH);
+    agg_proxy[0].reduction_result_int(result, EPOCH - 1);
+}
+
+
+void Partition::reduction_result_long(int64_t result)
+{
+    agg_proxy[0].reduction_result_long(result, EPOCH - 1);
+}
+
+
+void Partition::reduction_result_float(float result)
+{
+    agg_proxy[0].reduction_result_float(result, EPOCH - 1);
 }
 
 
@@ -424,6 +464,7 @@ void Partition::operation_reduction(char* cmd)
     cmd += col_size;
     AggregateOperation op = static_cast<AggregateOperation>(extract<int>(cmd));
     TablePtr table = get_table(table_name);
+    //CkPrintf("[%i] Size = %i, col = %s, op = %i\n", thisIndex, table->num_rows(), col_name.c_str(), op);
     ScalarPtr result = local_reduction(table, col_name, op);
     
     switch (result->type->id())
@@ -461,9 +502,7 @@ ScalarPtr Partition::local_reduction(TablePtr &table, std::string &col_name, Agg
 {
     std::string oper = get_compute_function(op);
     ChunkedArrayPtr col_array = table->GetColumnByName(col_name);
-    arrow::compute::ScalarAggregateOptions scalar_aggregate_options;
-    scalar_aggregate_options.skip_nulls = false;
-    arrow::Datum result = arrow::compute::CallFunction(oper, {col_array}, &scalar_aggregate_options).ValueOrDie();
+    arrow::Datum result = arrow::compute::CallFunction(oper, {col_array}).ValueOrDie();
     return result.scalar();
 }
 
@@ -673,7 +712,6 @@ void Partition::read_parquet(int table_name, std::string file_path)
         start_row += nextra_rows;
     }
 
-
     int num_rows_before = start_row;
     int num_row_groups = file_metadata->num_row_groups();
 
@@ -703,8 +741,8 @@ void Partition::read_parquet(int table_name, std::string file_path)
         row_tables.push_back(sliced_table);
 
         // Update counters
-        rows_read += table->num_rows();
-        rows_to_read -= table->num_rows();
+        rows_read += sliced_table->num_rows();
+        rows_to_read -= sliced_table->num_rows();
         start_row = 0;  // Reset start_row for subsequent row groups
     }
 
@@ -857,11 +895,35 @@ void Aggregator::deposit_size(int partition, int local_size)
     //if (table_sizes)
 }
 
-template<typename T>
-void Aggregator::reduction_result(T result, int epoch)
+//template<typename T>
+void Aggregator::reduction_result_int(int result, int epoch)
 {
     CkAssert(CkMyPe() == 0);
-    CcsSendDelayedReply(fetch_reply[epoch], sizeof(T), (char*) &result);
+    char* ret = (char*) malloc(sizeof(int) + sizeof(int));
+    int type = arrow::Type::INT32;
+    std::memcpy(ret, &type, sizeof(int));
+    std::memcpy(ret + sizeof(int), &result, sizeof(int));
+    CcsSendDelayedReply(fetch_reply[epoch], sizeof(int) + sizeof(int), ret);
+}
+
+void Aggregator::reduction_result_long(int64_t result, int epoch)
+{
+    CkAssert(CkMyPe() == 0);
+    char* ret = (char*) malloc(sizeof(int) + sizeof(int64_t));
+    int type = arrow::Type::INT64;
+    std::memcpy(ret, &type, sizeof(int));
+    std::memcpy(ret + sizeof(int), &result, sizeof(int64_t));
+    CcsSendDelayedReply(fetch_reply[epoch], sizeof(int) + sizeof(int64_t), ret);
+}
+
+void Aggregator::reduction_result_float(float result, int epoch)
+{
+    CkAssert(CkMyPe() == 0);
+    char* ret = (char*) malloc(sizeof(int) + sizeof(float));
+    int type = arrow::Type::FLOAT;
+    std::memcpy(ret, &type, sizeof(int));
+    std::memcpy(ret + sizeof(int), &result, sizeof(float));
+    CcsSendDelayedReply(fetch_reply[epoch], sizeof(int) + sizeof(float), ret);
 }
 
 void Aggregator::fetch_callback(int epoch, BufferPtr &out)

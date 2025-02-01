@@ -88,10 +88,10 @@ public:
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         int epoch = extract<int>(cmd);
         int size = extract<int>(cmd);
+        CkPrintf("Epoch = %i\n", epoch);
         fetch_reply[epoch] = CcsDelayReply();
         partition_ptr->receive_command(epoch, size, cmd);
     }
-
 
     static void barrier_handler(char* msg)
     {

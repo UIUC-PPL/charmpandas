@@ -40,8 +40,12 @@ module partition
 
         //entry [reductiontarget] void aggregator_barrier(int agg_epoch);
 
-        template <typename T>
-        entry void reduction_result(T result, int epoch);
+        //template <typename T>
+        entry void reduction_result_int(int result, int epoch);
+
+        entry void reduction_result_long(int64_t result, int epoch);
+
+        entry void reduction_result_float(float result, int epoch);
 
         entry [reductiontarget] void start_polling();
     };
@@ -62,7 +66,10 @@ module partition
                 }
         };
 
-        template <typename T>
-        entry [reductiontarget] void reduction_result(T result);
+        entry [reductiontarget] void reduction_result_int(int result);
+
+        entry [reductiontarget] void reduction_result_long(int64_t result);
+
+        entry [reductiontarget] void reduction_result_float(float result);
     };
 }

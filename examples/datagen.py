@@ -11,7 +11,7 @@ ages = [i % 100 for i in range(n)]
 city = ["C%i" % randint(0, 100) for i in range(n)]
 
 table1 = pd.DataFrame({"first_name" : first_names, "last_name" : last_names,
-                       "user_id" : user_ids, "city" : city})
+                       "user_id" : np.array(user_ids, dtype=np.int32), "city" : city})
 
 shuffle(user_ids)
 first_names = first_names[user_ids]

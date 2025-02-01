@@ -198,8 +198,12 @@ public:
 
     //void aggregator_barrier(int agg_epoch);
 
-    template<typename T>
-    void reduction_result(T result, int epoch);
+    //template<typename T>
+    void reduction_result_int(int result, int epoch);
+
+    void reduction_result_long(int64_t result, int epoch);
+
+    void reduction_result_float(float result, int epoch);
 
     void start_polling();
 };
@@ -285,8 +289,11 @@ public:
     template<typename T>
     void reduce_scalar(ScalarPtr& scalar, AggregateOperation& op);
 
-    template<typename T>
-    void reduction_result(T result);
+    void reduction_result_int(int result);
+
+    void reduction_result_long(int64_t result);
+
+    void reduction_result_float(float result);
 };
 
 #endif
