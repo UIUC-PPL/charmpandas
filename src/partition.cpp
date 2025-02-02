@@ -1,6 +1,8 @@
 #include <xxhash.h>
 #include <iostream>
 #include <fstream>
+#include <filesystem>
+#include <regex>
 #include "utils.hpp"
 #include "operations.hpp"
 #include "messaging.hpp"
@@ -18,6 +20,8 @@
 
 #define TEMP_TABLE_OFFSET (1 << 30)
 
+namespace fs = std::filesystem;
+
 
 TablePtr clean_metadata(TablePtr &table)
 {
@@ -33,6 +37,26 @@ TablePtr clean_metadata(TablePtr &table)
         indices.push_back(col_index);
     }
     return table->SelectColumns(indices).ValueOrDie();
+}
+
+std::string get_parent_dir(const std::string& path_str) 
+{
+    std::filesystem::path path(path_str);
+    return path.remove_filename().string();
+}
+
+std::vector<std::string> get_matching_files(std::string& path) 
+{
+    fs::path dir(get_parent_dir(path));
+    std::regex pattern(path);
+    std::vector<std::string> matches;
+    for (const auto& entry : fs::recursive_directory_iterator(dir)) {
+        if (fs::is_regular_file(entry) && 
+            std::regex_match(entry.path().filename().string(), pattern)) {
+            matches.push_back(entry.path().string());
+        }
+    }
+    return matches;
 }
 
 
@@ -688,84 +712,101 @@ arrow::Datum Partition::traverse_ast(char* &msg)
 
 void Partition::read_parquet(int table_name, std::string file_path)
 {
+    std::vector<std::string> files = get_matching_files(file_path);
     std::shared_ptr<arrow::io::ReadableFile> input_file;
-    input_file = arrow::io::ReadableFile::Open(file_path).ValueOrDie();
+    TablePtr read_tables;
 
-    // Create a ParquetFileReader instance
-    std::unique_ptr<parquet::arrow::FileReader> reader;
-    parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
+    if (thisIndex == 0)
+        CkPrintf("[%d] Reading %i files\n", thisIndex, files.size());
 
-    // Get the file metadata
-    std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
-
-    int num_rows = file_metadata->num_rows();
-    int nrows_per_partition = num_rows / num_partitions;
-    int start_row = nrows_per_partition * thisIndex;
-    int nextra_rows = num_rows - num_partitions * nrows_per_partition;
-
-    if (thisIndex < nextra_rows)
+    for (int i = 0; i < files.size(); i++)
     {
-        start_row += thisIndex;
-        nrows_per_partition++;
-    }
-    else
-    {
-        start_row += nextra_rows;
-    }
+        std::string file = files[i];
+        input_file = arrow::io::ReadableFile::Open(file).ValueOrDie();
 
-    int num_rows_before = start_row;
-    int num_row_groups = file_metadata->num_row_groups();
+        // Create a ParquetFileReader instance
+        std::unique_ptr<parquet::arrow::FileReader> reader;
+        parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
 
-    // Variables to keep track of rows read
-    int64_t rows_read = 0;
-    int64_t rows_to_read = nrows_per_partition;
+        // Get the file metadata
+        std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
 
-    std::vector<TablePtr> row_tables;
-    for (int i = 0; i < num_row_groups && rows_to_read > 0; ++i) 
-    {
-        int64_t row_group_num_rows = file_metadata->RowGroup(i)->num_rows();
+        int num_rows = file_metadata->num_rows();
 
-        if (start_row >= row_group_num_rows) 
+        //if (thisIndex == 0)
+        //    CkPrintf("[%d] Reading %i rows from %s\n", thisIndex, num_rows, file.c_str());
+
+        int nrows_per_partition = num_rows / num_partitions;
+        int start_row = nrows_per_partition * thisIndex;
+        int nextra_rows = num_rows - num_partitions * nrows_per_partition;
+
+        if (thisIndex < nextra_rows)
         {
-            // Skip this row group
-            start_row -= row_group_num_rows;
-            continue;
+            start_row += thisIndex;
+            nrows_per_partition++;
+        }
+        else
+        {
+            start_row += nextra_rows;
         }
 
-        // Calculate how many rows to read from this row group
-        int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
+        int num_rows_before = start_row;
+        int num_row_groups = file_metadata->num_row_groups();
 
-        // Read the rows
-        TablePtr table;
-        reader->ReadRowGroup(i, &table);
-        TablePtr sliced_table = table->Slice(start_row, rows_in_group);
-        row_tables.push_back(sliced_table);
+        // Variables to keep track of rows read
+        int64_t rows_read = 0;
+        int64_t rows_to_read = nrows_per_partition;
 
-        // Update counters
-        rows_read += sliced_table->num_rows();
-        rows_to_read -= sliced_table->num_rows();
-        start_row = 0;  // Reset start_row for subsequent row groups
+        std::vector<TablePtr> row_tables;
+        for (int i = 0; i < num_row_groups && rows_to_read > 0; ++i) 
+        {
+            int64_t row_group_num_rows = file_metadata->RowGroup(i)->num_rows();
+
+            if (start_row >= row_group_num_rows) 
+            {
+                // Skip this row group
+                start_row -= row_group_num_rows;
+                continue;
+            }
+
+            // Calculate how many rows to read from this row group
+            int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
+
+            // Read the rows
+            TablePtr table;
+            reader->ReadRowGroup(i, &table);
+            TablePtr sliced_table = table->Slice(start_row, rows_in_group);
+            row_tables.push_back(sliced_table);
+
+            // Update counters
+            rows_read += sliced_table->num_rows();
+            rows_to_read -= sliced_table->num_rows();
+            start_row = 0;  // Reset start_row for subsequent row groups
+        }
+
+        TablePtr combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
+
+        read_tables = arrow::ConcatenateTables({read_tables, combined}).ValueOrDie();
     }
 
-    TablePtr combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
-
     arrow::Int32Builder builder;
-    builder.Reserve(combined->num_rows());
+    builder.Reserve(read_tables->num_rows());
 
-    for (int32_t i = 0; i < combined->num_rows(); ++i)
+    for (int32_t i = 0; i < read_tables->num_rows(); ++i)
         builder.Append(i);
 
     ArrayPtr index_array;
     builder.Finish(&index_array);
 
-    combined = set_column(combined, "local_index", arrow::Datum(
+    read_tables = set_column(read_tables, "local_index", arrow::Datum(
         arrow::ChunkedArray::Make({index_array}).ValueOrDie()));
     ArrayPtr home_partition_array = arrow::MakeArrayFromScalar(
         *std::make_shared<arrow::Int32Scalar>(thisIndex), 
-        combined->num_rows()).ValueOrDie();
-    tables[table_name] = set_column(combined, "home_partition", arrow::Datum(
+        read_tables->num_rows()).ValueOrDie();
+    tables[table_name] = set_column(read_tables, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()));
 
+    
     //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
 }
 
