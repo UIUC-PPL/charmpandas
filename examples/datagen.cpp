@@ -17,23 +17,27 @@ arrow::Status CreateUserTable(int num_rows) {
     auto schema = arrow::schema({
         arrow::field("first_name", arrow::utf8()),
         arrow::field("last_name", arrow::utf8()),
+        arrow::field("city", arrow::utf8()),
         arrow::field("user_id", arrow::int64())
     });
 
     // Create array builders
     arrow::StringBuilder first_name_builder;
     arrow::StringBuilder last_name_builder;
+    arrow::StringBuilder city_builder;
     arrow::Int64Builder user_id_builder;
 
     // Sample data (modify with your actual data)
     std::vector<std::string> first_names;
     std::vector<std::string> last_names;
+    std::vector<std::string> cities;
     std::vector<int64_t> user_ids;
 
     for (int i = 0; i < num_rows; i++)
     {
         first_names.push_back("A" + std::to_string(i));
         last_names.push_back("B" + std::to_string(i));
+        cities.push_back("C" + std::to_string(i % 1000));
         user_ids.push_back(i);
     }
 
