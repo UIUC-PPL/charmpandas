@@ -44,19 +44,22 @@ arrow::Status CreateUserTable(int num_rows) {
     // Append values to builders
     ARROW_RETURN_NOT_OK(first_name_builder.AppendValues(first_names));
     ARROW_RETURN_NOT_OK(last_name_builder.AppendValues(last_names));
+    ARROW_RETURN_NOT_OK(city_builder.AppendValues(cities));
     ARROW_RETURN_NOT_OK(user_id_builder.AppendValues(user_ids));
 
     // Finish arrays
     std::shared_ptr<arrow::Array> first_names_array;
     std::shared_ptr<arrow::Array> last_names_array;
+    std::shared_ptr<arrow::Array> cities_array;
     std::shared_ptr<arrow::Array> user_ids_array;
     
     ARROW_RETURN_NOT_OK(first_name_builder.Finish(&first_names_array));
     ARROW_RETURN_NOT_OK(last_name_builder.Finish(&last_names_array));
+    ARROW_RETURN_NOT_OK(city_builder.Finish(&cities_array));
     ARROW_RETURN_NOT_OK(user_id_builder.Finish(&user_ids_array));
 
     // Create table
-    auto table = arrow::Table::Make(schema, {first_names_array, last_names_array, user_ids_array});
+    auto table = arrow::Table::Make(schema, {first_names_array, last_names_array, cities_array, user_ids_array});
 
     // Set up Parquet writer properties
     std::shared_ptr<parquet::WriterProperties> props = parquet::WriterProperties::Builder()
