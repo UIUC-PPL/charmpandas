@@ -194,7 +194,7 @@ public:
 
     void partition_table(TablePtr table, int result_name);
 
-    //void partition_barrier(int partition_epoch);
+    void barrier_handler(int epoch);
 
     //void aggregator_barrier(int agg_epoch);
 
@@ -270,7 +270,7 @@ public:
 
     void operation_fetch_size(char* cmd);
 
-    //void operation_barrier(char* cmd);
+    void operation_barrier(char* cmd);
 
     void operation_reduction(char* cmd);
 

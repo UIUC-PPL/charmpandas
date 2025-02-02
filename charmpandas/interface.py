@@ -330,6 +330,18 @@ class CCSInterface(Interface):
         cmd += gcmd
 
         return self.send_command(Handlers.sync_handler, cmd, reply_type=None)
+    
+    def barrier(self):
+        self.activity_handler()
+        cmd = self.get_header(self.epoch)
+
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.barrier, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+
+        self.send_command_raw(Handlers.sync_handler, cmd, 0)
 
     def rescale(self, new_procs):
         # This should be a sync call

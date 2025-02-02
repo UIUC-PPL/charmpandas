@@ -450,11 +450,12 @@ void Partition::operation_fetch_size(char* cmd)
     complete_operation();
 }
 
-/*void Partition::operation_barrier(char* cmd)
+void Partition::operation_barrier(char* cmd)
 {
-    CkCallback cb(CkReductionTarget(Aggregator, partition_barrier), agg_proxy[0]);
+    CkCallback cb(CkReductionTarget(Aggregator, barrier_handler), agg_proxy[0]);
     contribute(sizeof(int), &EPOCH, CkReduction::min_int, cb);
-}*/
+    complete_operation();
+}
 
 void Partition::operation_reduction(char* cmd)
 {
@@ -596,11 +597,11 @@ void Partition::execute_command(int epoch, int size, char* cmd)
             break;
         }
 
-        /*case Operation::Barrier:
+        case Operation::Barrier:
         {
             operation_barrier(cmd);
             break;
-        }*/
+        }
 
         case Operation::Reduction:
         {
@@ -1017,35 +1018,10 @@ void Aggregator::operation_join(char* cmd)
     start_join();
 }
 
-/*void Aggregator::operation_barrier(char* cmd)
+void Aggregator::barrier_handler(int epoch)
 {
-    CkCallback cb(CkReductionTarget(Aggregator, aggregator_barrier), thisProxy[0]);
-    contribute(sizeof(int), &EPOCH, CkReduction::min_int, cb);
+    CcsSendDelayedReply(fetch_reply[epoch], 0, NULL);
 }
-
-void Aggregator::aggregator_barrier(int agg_epoch)
-{
-    if (partition_barrier_epoch != -1)
-    {
-        bool ret = true;
-        CcsSendDelayedReply(fetch_reply[partition_barrier_epoch], 1, &ret);
-        partition_barrier_epoch = -1;
-    }
-    else
-        aggregator_barrier_epoch = agg_epoch;
-}
-
-void Aggregator::partition_barrier(int partition_epoch)
-{
-    if (aggregator_barrier_epoch != -1)
-    {
-        bool ret = true;
-        CcsSendDelayedReply(fetch_reply[partition_epoch], 1, &ret);
-        aggregator_barrier_epoch = -1;
-    }
-    else
-        partition_barrier_epoch = partition_epoch;
-}*/
 
 void Aggregator::handle_deletions(char* &cmd)
 {
@@ -1078,12 +1054,6 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
             operation_groupby(cmd);
             break;
         }
-
-        /*case Operation::Barrier:
-        {
-            operation_barrier(cmd);
-            break;
-        }*/
 
         default:
             break;

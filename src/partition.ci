@@ -36,9 +36,7 @@ module partition
 
         entry void receive_shuffle_data(RedistTableMsg* msg);
 
-        //entry [reductiontarget] void partition_barrier(int partition_epoch);
-
-        //entry [reductiontarget] void aggregator_barrier(int agg_epoch);
+        entry [reductiontarget] void barrier_handler(int epoch);
 
         //template <typename T>
         entry void reduction_result_int(int result, int epoch);
