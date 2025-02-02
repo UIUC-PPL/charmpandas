@@ -428,7 +428,7 @@ class LocalCluster(CCSInterface):
 
 class SLURMCluster(CCSInterface):
     def __init__(self, account_name, partition_name, charmpandas_dir,
-                 min_nodes=1, max_nodes=1, odf=4,
+                 min_nodes=1, max_nodes=1, odf=4, mem_per_node='128G',
                  tasks_per_node=1, activity_timeout=60,
                  job_name="charmpandas_server"):
         self.charmpandas_dir = charmpandas_dir
@@ -443,6 +443,7 @@ class SLURMCluster(CCSInterface):
         self.server_ip = None
         self.expand_in_progress = False
         self.inactive_flag = False
+        self.mem_per_node = mem_per_node
         self._run_server()
         if self.server_ip != None:
             super().__init__(self.server_ip, 1234, odf=odf, activity_timeout=activity_timeout)
@@ -494,6 +495,7 @@ class SLURMCluster(CCSInterface):
                                                partition_name=self.partition_name,
                                                num_nodes=self.min_nodes,
                                                tasks_per_node=self.tasks_per_node,
+                                               mem_limit=self.mem_per_node,
                                                output_filename="%s_%i.log" % (self.job_name, idx)))
 
         self.expand_in_progress = True
@@ -543,6 +545,7 @@ class SLURMCluster(CCSInterface):
                                                partition_name=self.partition_name,
                                                num_nodes=1,
                                                tasks_per_node=self.tasks_per_node,
+                                               mem_limit=self.mem_per_node,
                                                output_filename="%s_%i.log" % (self.job_name, idx)))
 
         loop = asyncio.get_event_loop()
@@ -559,6 +562,7 @@ class SLURMCluster(CCSInterface):
                                         partition_name=self.partition_name,
                                         num_nodes=1,
                                         tasks_per_node=self.tasks_per_node,
+                                        mem_limit=self.mem_per_node,
                                         output_filename="%s_driver.log" % self.job_name,
                                         base_dir=self.charmpandas_dir,
                                         num_pes=self.min_nodes * self.tasks_per_node)
