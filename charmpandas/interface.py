@@ -461,6 +461,9 @@ class SLURMCluster(CCSInterface):
             super().__init__(self.server_ip, 1234, odf=odf, activity_timeout=activity_timeout)
         else:
             raise RuntimeError("Error retreiving server IP address")
+        
+    def close(self):
+        self._kill_jobs(self.job_ids)
 
     def inactivity_handler(self):
         if not self.expand_in_progress and self.current_nodes > self.min_nodes:
