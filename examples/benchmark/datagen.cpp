@@ -158,6 +158,7 @@ arrow::Status CreateAgesTable(int num_rows, int num_procs) {
 
 int main(int argc, char** argv) {
     int num_rows = std::atoi(argv[1]);
-    arrow::Status status1 = CreateUserTable(num_rows);
-    arrow::Status status2 = CreateAgesTable(num_rows);
+    int num_procs = std::atoi(argv[2]);
+    arrow::Status status1 = CreateUserTable(num_rows, num_procs);
+    arrow::Status status2 = CreateAgesTable(num_rows, num_procs);
 }
