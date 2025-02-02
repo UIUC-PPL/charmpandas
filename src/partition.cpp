@@ -804,7 +804,7 @@ void Partition::read_parquet(int table_name, std::string file_path)
         *std::make_shared<arrow::Int32Scalar>(thisIndex), 
         read_tables->num_rows()).ValueOrDie();
     tables[table_name] = set_column(read_tables, "home_partition", arrow::Datum(
-        arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()));
+        arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()))->CombineChunks().ValueOrDie();
 
     
     //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
