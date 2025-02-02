@@ -52,7 +52,7 @@ std::vector<std::string> get_matching_files(std::string& path)
     std::vector<std::string> matches;
     for (const auto& entry : fs::recursive_directory_iterator(dir)) {
         if (fs::is_regular_file(entry) && 
-            std::regex_match(entry.path().filename().string(), pattern)) {
+            std::regex_match(entry.path().string(), pattern)) {
             matches.push_back(entry.path().string());
         }
     }
@@ -714,7 +714,7 @@ void Partition::read_parquet(int table_name, std::string file_path)
 {
     std::vector<std::string> files = get_matching_files(file_path);
     std::shared_ptr<arrow::io::ReadableFile> input_file;
-    TablePtr read_tables;
+    TablePtr read_tables = nullptr;
 
     if (thisIndex == 0)
         CkPrintf("[%d] Reading %i files\n", thisIndex, files.size());
@@ -786,7 +786,10 @@ void Partition::read_parquet(int table_name, std::string file_path)
 
         TablePtr combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
 
-        read_tables = arrow::ConcatenateTables({read_tables, combined}).ValueOrDie();
+        if (read_tables == nullptr)
+            read_tables = combined;
+        else
+            read_tables = arrow::ConcatenateTables({read_tables, combined}).ValueOrDie();
     }
 
     arrow::Int32Builder builder;
