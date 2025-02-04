@@ -16,7 +16,7 @@ Installation
 
 5. Install charmpandas::
 
-    git clone https://github.com/adityapb/charmpandas.git
+    git clone https://github.com/UIUC-PPL/charmpandas.git
     cd charmpandas/src
     export CHARMDIR=<charm++ home directory>
     export XXHASH_DIR=<xxhash home directory>
