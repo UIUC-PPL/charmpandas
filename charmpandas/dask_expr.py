@@ -4,33 +4,32 @@ from dask.dataframe.dask_expr._expr import Expr
 from dask.dataframe.dask_expr._groupby import GroupBy
 from charmpandas.interface import LocalCluster, CCSInterface
 from functools import lru_cache
+import copy
 cluster = LocalCluster(min_pes=4,max_pes=4, odf=4,activity_timeout=60)
 pd.set_interface(cluster)
-def execute_dask(simplified_expr): # for now replaces dask read parquet with charmpandas read_parquet
-    callables = ['read_parquet']
-    print(simplified_expr)
-    if not (isinstance(simplified_expr, Expr) or isinstance(simplified_expr, GroupBy)):
-        print(f'Operation - {simplified_expr} not supported in charm pandas')
-        return simplified_expr
+def execute_dask(dask_obj, depth=0): # for now replaces dask read parquet with charmpandas read_parquet
+    # print(simplified_expr)
+    if not (isinstance(dask_obj, Expr) or isinstance(dask_obj, GroupBy)):
+        # print(f'Operation - {simplified_expr} not supported in charm pandas')
+        return dask_obj
     else:
-        if isinstance(simplified_expr, GroupBy):
-            return simplified_expr
-            # return charm_mapper('groupby', [simplified_expr.by])
-        # elif simplified_expr._funcname in callables:
-        #     f = charm_mapper(simplified_expr._funcname)
-        #     args = [execute_dask(o) for o in simplified_expr.operands]
-        #     return f(args)
+        if isinstance(dask_obj, GroupBy):
+            pd_df = execute_dask(dask_obj.obj.expr)
+            return pd_df.groupby(dask_obj.by)
         else:
             args = []
-            if '_funcname' not in dir(simplified_expr):
-                print(f'Operation - {simplified_expr} not supported')
-                return simplified_expr
+            if '_funcname' not in dir(dask_obj):
+                # print(f'Operation - {simplified_expr} not supported')
+                return dask_obj
             try:
-                args = [execute_dask(o) for o in simplified_expr.operands]
-            except:
-                print("No operands found")
-            return charm_mapper(simplified_expr._funcname, args)
-
+                args = [execute_dask(o, depth+1) for o in dask_obj.operands]
+            except Exception as e:
+                print(f"Error in executing {dask_obj}: {e}")
+            result = charm_mapper(dask_obj._funcname, args)
+            # Clear the cache only at the top level (depth=0)
+            if depth == 0:
+                read_parquet.cache_clear()
+            return result
 
 @lru_cache(maxsize=None)
 def read_parquet(path):
@@ -70,4 +69,15 @@ def charm_mapper(func_name, args):
         return args[0].count()
     elif func_name == 'sum':
         return args[0].sum()
+    elif func_name == 'assign':
+        print(args)
+        if len(args) == 2: # Assign a df
+            args[0] = args[1]
+            return args[0]
+        else: # Assign a column
+            args[0][args[1]] = args[2]
+            return args[0]
+    # Add assignment operations
     return None
+
+# New function to handle groupby operations
