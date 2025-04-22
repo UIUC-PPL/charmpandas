@@ -32,13 +32,13 @@ def execute_dask(dask_obj, depth=0): # for now replaces dask read parquet with c
             return result
 
 @lru_cache(maxsize=None)
-def read_parquet(path):
-    return pd.read_parquet(path)
+def read_parquet(path, cols):
+    return pd.read_parquet(path, cols)
 
 def charm_mapper(func_name, args):
     # Dataframe operations  
     if func_name == 'read_parquet':
-        return read_parquet(args[0])
+        return read_parquet(args[0], tuple(args[1]))
     elif func_name == 'projection':
         return args[0][args[1]]
     elif func_name == 'merge':

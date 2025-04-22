@@ -183,7 +183,7 @@ class CCSInterface(Interface):
     def mark_deletion(self, table_name):
         self.deletion_buffer.append(table_name)
 
-    def read_parquet(self, table_name, file_path):
+    def read_parquet(self, table_name, file_path, columns=[]):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
@@ -191,6 +191,10 @@ class CCSInterface(Interface):
         gcmd += to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += string_bytes(file_path)
+        if columns:
+            gcmd += to_bytes(len(columns), 'i')
+            for col in columns:
+                gcmd += string_bytes(col)
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
