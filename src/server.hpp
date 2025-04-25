@@ -18,6 +18,7 @@ CProxy_Aggregator agg_proxy;
 std::unordered_map<int, CcsDelayedReply> fetch_reply;
 CcsDelayedReply creation_reply;
 
+
 class Server
 {
 public:
@@ -42,6 +43,7 @@ public:
         bitmap[CkNumPes()+sizeof(int)] = '\0';
         rescale(pass_msg);
         CkPrintf("Rescale epoch = %i\n", epoch);
+        //main_proxy.ckLocal()->creation_reply = CcsDelayReply();
         partition_ptr->receive_command(epoch, size, cmd);
         free(pass_msg);
     }
@@ -86,8 +88,20 @@ public:
         char* cmd = msg + CmiMsgHeaderSizeBytes;
         int epoch = extract<int>(cmd);
         int size = extract<int>(cmd);
+        CkPrintf("Epoch = %i\n", epoch);
         fetch_reply[epoch] = CcsDelayReply();
         partition_ptr->receive_command(epoch, size, cmd);
+    }
+
+    static void barrier_handler(char* msg)
+    {
+        char* cmd = msg + CmiMsgHeaderSizeBytes;
+        int epoch_chare = extract<int>(cmd);
+        int epoch_group = extract<int>(cmd);
+        int size = extract<int>(cmd);
+        fetch_reply[epoch_chare] = CcsDelayReply();
+        partition_ptr->receive_command(epoch_chare, size, cmd);
+        agg_proxy.receive_command(epoch_group, size, cmd);
     }
 
     static void create_partition(int odf, int lb_period)

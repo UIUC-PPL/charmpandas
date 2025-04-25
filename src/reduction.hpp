@@ -55,56 +55,74 @@ AggregateReductionMsg* create_reduction_msg(int result_name, int table_size, cha
     return msg;
 }
 
-enum class AggregateOperation : int
-{
-    HashSum = 0,
-    HashCount = 1,
-    HashAll = 2,
-    HashAny = 3,
-    HashApproximateMedian = 4,
-    HashCountDistinct = 5,
-    HashDistinct = 6,
-    HashFirst = 7,
-    HashLast = 8,
-    HashFirstLast = 9
-};
-
-std::string get_aggregation_function(AggregateOperation op)
+std::string get_compute_function(AggregateOperation& op)
 {
     switch (op)
     {
-        case AggregateOperation::HashSum:
-            return "hash_sum";
+        case AggregateOperation::Sum:
+            return "sum";
 
-        case AggregateOperation::HashCount:
-            return "hash_count";
+        case AggregateOperation::Count:
+            return "count";
 
-        case AggregateOperation::HashAll:
-            return "hash_all";
+        case AggregateOperation::All:
+            return "all";
 
-        case AggregateOperation::HashAny:
-            return "hash_any";
+        case AggregateOperation::Any:
+            return "any";
 
-        case AggregateOperation::HashApproximateMedian:
-            return "hash_approximate_median";
+        case AggregateOperation::ApproximateMedian:
+            return "approximate_median";
 
-        case AggregateOperation::HashCountDistinct:
-            return "hash_count_distinct";
+        case AggregateOperation::CountDistinct:
+            return "count_distinct";
 
-        case AggregateOperation::HashDistinct:
-            return "hash_distinct";
+        case AggregateOperation::Distinct:
+            return "distinct";
 
-        case AggregateOperation::HashFirst:
-            return "hash_first";
+        case AggregateOperation::First:
+            return "first";
 
-        case AggregateOperation::HashLast:
-            return "hash_last";
+        case AggregateOperation::Last:
+            return "last";
 
-        case AggregateOperation::HashFirstLast:
-            return "hash_first_last";
+        case AggregateOperation::FirstLast:
+            return "first_last";
 
         default:
             return "error";
+    }
+}
+
+inline std::string get_aggregation_function(AggregateOperation& op)
+{
+    return "hash_" + get_compute_function(op);
+}
+
+CkReduction::reducerType get_reduction_function(AggregateOperation& op, arrow::Type::type type)
+{
+    switch (op)
+    {
+        case AggregateOperation::Sum:
+        case AggregateOperation::Count:
+        {
+            switch (type)
+            {
+                case arrow::Type::INT32:
+                    return CkReduction::sum_int;
+
+                case arrow::Type::FLOAT:
+                    return CkReduction::sum_float;
+
+                case arrow::Type::DOUBLE:
+                    return CkReduction::sum_double;
+            }
+
+            break;
+        }
+
+        default:
+            return CkReduction::sum_int;
     }
 }
 

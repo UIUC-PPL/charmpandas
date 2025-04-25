@@ -3,8 +3,13 @@ import pyarrow as pa
 import subprocess
 import threading
 import time
+import asyncio
+import re
+import hostlist
 from pyccs import Server
 
+import nest_asyncio
+nest_asyncio.apply()
 
 def to_bytes(value, dtype='I'):
     return struct.pack(dtype, value)
@@ -28,6 +33,15 @@ def from_bytes(bvalue, dtype='I'):
         return struct.unpack(dtype, bvalue)[0]
 
 
+def decode_type(type_code):
+    if type_code == 7:
+        return 'i'
+    elif type_code == 9:
+        return 'l'
+    elif type_code == 11:
+        return 'f'
+
+
 class Handlers(object):
     connection_handler = b'connect'
     disconnection_handler = b'disconnect'
@@ -47,6 +61,10 @@ class Operations(object):
     concat = 6
     filter = 7
     rescale = 8
+    skip = 9
+    fetch_size = 10
+    barrier = 11
+    reduction = 12
 
 
 class GroupByOperations(object):
@@ -129,7 +147,7 @@ class DebugInterface(Interface):
 
     def fetch_table(self, table_name):
         pass
-    
+
 
 class CCSInterface(Interface):
     def __init__(self, server_ip, server_port, odf=4, lb_period=5, activity_timeout=60):
@@ -154,21 +172,21 @@ class CCSInterface(Interface):
 
     def get_header(self, epoch):
         return to_bytes(epoch, 'i')
-    
+
     def get_deletion_header(self):
         cmd = to_bytes(len(self.deletion_buffer), 'i')
         for table in self.deletion_buffer:
             cmd += to_bytes(table, 'i')
         self.deletion_buffer = []
         return cmd
-    
+
     def mark_deletion(self, table_name):
         self.deletion_buffer.append(table_name)
 
     def read_parquet(self, table_name, file_path):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
-        
+
         gcmd = self.get_deletion_header()
         gcmd += to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
@@ -252,7 +270,7 @@ class CCSInterface(Interface):
         gcmd += to_bytes(result_name, 'i')
 
         opts_cmd = to_bytes(len(keys), 'i')
-        
+
         for key in keys:
             opts_cmd += string_bytes(key)
 
@@ -298,11 +316,39 @@ class CCSInterface(Interface):
         cmd += gcmd
         self.send_command_async(Handlers.async_handler, cmd)
 
+    def reduction(self, name, field, op):
+        self.activity_handler()
+        cmd = self.get_header(self.epoch)
+
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.reduction, 'i')
+        gcmd += to_bytes(name, 'i')
+        gcmd += string_bytes(field)
+        gcmd += to_bytes(op, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+
+        return self.send_command(Handlers.sync_handler, cmd, reply_type=None)
+    
+    def barrier(self):
+        self.activity_handler()
+        cmd = self.get_header(self.epoch)
+
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.barrier, 'i')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+
+        self.send_command_raw(Handlers.sync_handler, cmd, 0)
+
     def rescale(self, new_procs):
+        # This should be a sync call
         cmd = to_bytes(self.epoch, 'i')
 
         cmd += to_bytes(new_procs, 'i')
-        
+
         gcmd = self.get_deletion_header()
         gcmd += to_bytes(Operations.rescale, 'i')
 
@@ -315,7 +361,7 @@ class CCSInterface(Interface):
         self.epoch += 1
         self.server.send_request(handler, 0, msg)
         return self.server.receive_response(reply_size)
-    
+
     def send_command_raw_var(self, handler, msg):
         self.epoch += 1
         self.server.send_request(handler, 0, msg)
@@ -325,10 +371,17 @@ class CCSInterface(Interface):
     def send_command(self, handler, msg, reply_size=None, reply_type='B', skip_timer=False):
         if not skip_timer:
             self.reset_timer()
+
         if reply_size is None:
-            return from_bytes(self.send_command_raw_var(handler, msg), reply_type)
+            result = self.send_command_raw_var(handler, msg)
         else:
-            return from_bytes(self.send_command_raw(handler, msg, reply_size), reply_type)
+            result = self.send_command_raw(handler, msg, reply_size)
+
+        if reply_type != None:
+            return from_bytes(result, reply_type)
+        else:
+            reply_type = decode_type(from_bytes(result[:4], 'i'))
+            return from_bytes(result[4:], reply_type)
 
     def send_command_async(self, handler, msg, skip_timer=False):
         if not skip_timer:
@@ -379,8 +432,238 @@ class LocalCluster(CCSInterface):
     def _run_server(self):
         self.process = subprocess.Popen(['/home/adityapb1546/charm/charmpandas/src/charmrun +p%i '
                                 '/home/adityapb1546/charm/charmpandas/src/server.out +balancer MetisLB +LBDebug 3'
-                                ' ++server ++server-port 1234 ++nodelist ./localnodelist' % self.max_pes], 
+                                ' ++server ++server-port 1234 ++nodelist ./localnodelist' % self.max_pes],
                                 shell=True, text=True, stdout=self.logfile, stderr=subprocess.STDOUT)
         time.sleep(5)
         self.current_pes = self.max_pes
+
+
+class SLURMCluster(CCSInterface):
+    def __init__(self, account_name, partition_name, charmpandas_dir,
+                 min_nodes=1, max_nodes=1, odf=4, mem_per_node='128G',
+                 tasks_per_node=1, activity_timeout=60,
+                 job_name="charmpandas_server"):
+        self.charmpandas_dir = charmpandas_dir
+        self.account_name = account_name
+        self.partition_name = partition_name
+        self.job_ids = []
+        self.current_nodes = 0
+        self.min_nodes = min_nodes
+        self.max_nodes = max_nodes
+        self.tasks_per_node = tasks_per_node
+        self.job_name = job_name
+        self.server_ip = None
+        self.expand_in_progress = False
+        self.inactive_flag = False
+        self.mem_per_node = mem_per_node
+        self._run_server()
+        if self.server_ip != None:
+            super().__init__(self.server_ip, 1234, odf=odf, activity_timeout=activity_timeout)
+        else:
+            raise RuntimeError("Error retreiving server IP address")
         
+    def close(self):
+        self._kill_jobs(self.job_ids)
+
+    def inactivity_handler(self):
+        if not self.expand_in_progress and self.current_nodes > self.min_nodes:
+            self.rescale(self.min_nodes * self.tasks_per_node)
+            self._write_nodelist(self.job_ids[:self.min_nodes])
+            self.shrink(self.min_nodes)
+            self.current_nodes = self.min_nodes
+        elif self.expand_in_progress:
+            self.inactive_flag = True
+
+    def activity_handler(self):
+        if not self.expand_in_progress and self.current_nodes < self.max_nodes:
+            self.expand(self.max_nodes)
+
+    def expand_callback(self, job_ids):
+        # update the nodelist file
+        self.job_ids += job_ids
+        self._write_nodelist(self.job_ids)
+
+        # then expand the application
+        self.rescale(self.max_nodes * self.tasks_per_node)
+        self.current_nodes = self.max_nodes
+
+        self.expand_in_progress = False
+        if self.inactive_flag:
+            self.reset_timer()
+            self.inactive_flag = False
+
+    def shrink(self, nnodes):
+        # Shrink to nnodes
+        jobs_to_kill = self.job_ids[nnodes:]
+        self._kill_jobs(jobs_to_kill)
+
+    def expand(self, nnodes):
+        # expand with self.expand_callback as callback
+        with open("%s/src/worker_job.sbatch" % self.charmpandas_dir, "r") as f:
+            template = f.read()
+
+        job_scripts = []
+        for i in range(nnodes - self.current_nodes):
+            idx = i + self.current_nodes
+            job_scripts.append(template.format(job_name="%s_%i" % (self.job_name, idx),
+                                               account_name=self.account_name,
+                                               partition_name=self.partition_name,
+                                               num_nodes=self.min_nodes,
+                                               tasks_per_node=self.tasks_per_node,
+                                               mem_limit=self.mem_per_node,
+                                               output_filename="%s_%i.log" % (self.job_name, idx)))
+
+        self.expand_in_progress = True
+        asyncio.create_task(self._submit_jobs(job_scripts, callback=self.expand_callback))
+
+    def _kill_jobs(self, job_ids):
+        try:
+            # Convert single job ID to list if needed
+            if isinstance(job_ids, str):
+                job_ids = [job_ids]
+
+            # Use subprocess to run scancel command
+            result = subprocess.run(
+                ['scancel'] + job_ids,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            return True
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error cancelling jobs: {e}")
+            return False
+
+    def _extract_ip_address(self, text):
+        # Comprehensive IP address regex pattern
+        ip_pattern = r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
+
+        # Find all IP addresses in the text
+        ip_addresses = re.findall(ip_pattern, text)
+        assert len(ip_addresses) == 1
+
+        return ip_addresses[0]
+
+    def _run_server(self):
+        # write sbatch file and submit
+        with open("%s/src/worker_job.sbatch" % self.charmpandas_dir, "r") as f:
+            template = f.read()
+
+        print("Submitting jobs to SLURM cluster")
+        job_scripts = []
+        for i in range(self.min_nodes - 1):
+            idx = i + self.current_nodes
+            job_scripts.append(template.format(job_name="%s_%i" % (self.job_name, idx),
+                                               account_name=self.account_name,
+                                               partition_name=self.partition_name,
+                                               num_nodes=1,
+                                               tasks_per_node=self.tasks_per_node,
+                                               mem_limit=self.mem_per_node,
+                                               output_filename="%s_%i.log" % (self.job_name, idx)))
+
+        loop = asyncio.get_event_loop()
+        self.job_ids = loop.run_until_complete(self._submit_jobs(job_scripts))
+
+        # now write the job script for the driver job
+        with open("%s/src/driver_job.sbatch" % self.charmpandas_dir, "r") as f:
+            template = f.read()
+
+        open("%s_driver.log" % self.job_name, "w").close()
+
+        driver_script = template.format(job_name="%s_driver" % self.job_name,
+                                        account_name=self.account_name,
+                                        partition_name=self.partition_name,
+                                        num_nodes=1,
+                                        tasks_per_node=self.tasks_per_node,
+                                        mem_limit=self.mem_per_node,
+                                        output_filename="%s_driver.log" % self.job_name,
+                                        base_dir=self.charmpandas_dir,
+                                        num_pes=self.min_nodes * self.tasks_per_node)
+
+        loop = asyncio.get_event_loop()
+        self.job_ids = loop.run_until_complete(self._submit_jobs([driver_script])) + self.job_ids
+
+        self._write_nodelist(self.job_ids)
+
+        while True:
+            time.sleep(2)
+            with open("%s_driver.log" % self.job_name, "r") as f:
+                lines = f.readlines()
+                if len(lines) > 0 and lines[-1].strip().replace('\n', '') == "CharmLB> MetisLB created.":
+                    self.server_ip = self._extract_ip_address(lines[2])
+                    break
+
+        self.current_nodes = self.min_nodes
+
+    def _write_nodelist(self, job_ids):
+        nodelist = []
+        for job_id in job_ids:
+            result = subprocess.run(
+                ['squeue', '-j', job_id, '-o', '%N'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            nodes = result.stdout.strip().split('\n')[1]
+            nodelist += hostlist.expand_hostlist(nodes)
+
+        nodestr = ""
+        for node in nodelist:
+            nodestr += "host %s ++cpus %i\n" % (node, self.tasks_per_node)
+
+        with open("slurmnodelist", "w") as f:
+            f.write(nodestr)
+
+    async def _submit_jobs(self, scripts, callback=None):
+        if len(scripts) == 0:
+            return []
+
+        job_ids = []
+        for i, script in enumerate(scripts):
+            idx = i + self.current_nodes
+            script_filename = "%s_job_%i.sbatch" % (self.job_name, idx)
+            with open(script_filename, "w") as f:
+                f.write(script)
+
+            proc = await asyncio.create_subprocess_shell(
+                f'sbatch {script_filename}',
+                stdout=subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            job_id = stdout.decode().split()[-1]
+            job_ids.append(job_id)
+
+        await self._monitor_jobs(job_ids)
+
+        if callback:
+            callback(job_ids)
+
+        return job_ids
+
+    async def _monitor_jobs(self, job_ids):
+        await asyncio.gather(
+            *[self._wait_job(job_id) for job_id in job_ids]
+        )
+
+    async def _wait_job(self, job_id, poll_interval=5):
+        while True:
+            # Asynchronous subprocess call
+            proc = await asyncio.create_subprocess_shell(
+                f'squeue -j {job_id} -o "%T"',
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+            stdout, _ = await proc.communicate()
+            job_status = stdout.decode().split('\n')[1].strip() if len(stdout.decode().split('\n')) > 1 else ''
+
+            if job_status == 'RUNNING':
+                return True
+
+            if job_status in ['COMPLETED', 'FAILED', 'CANCELLED']:
+                raise RuntimeError(f"Job {job_id} terminated with status: {job_status}")
+
+            await asyncio.sleep(poll_interval)

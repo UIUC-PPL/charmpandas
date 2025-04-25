@@ -82,7 +82,7 @@ class DataFrameGroupBy(object):
         agg_list = []
         if isinstance(aggs, str):
             raise NotImplementedError("Groupby requires specifying target columns"
-                                    "for now")
+                                      "for now")
         elif isinstance(aggs, dict):
             for field, opers in aggs:
                 if isinstance(opers, list):
@@ -140,6 +140,14 @@ class DataFrameField(object):
     
     def __ne__(self, other):
         return self.binary_op(other, ArrayOperations.not_equal)
+    
+    def count(self):
+        interface = get_interface()
+        return interface.reduction(self.df.name, self.field, GroupByOperations.count)
+
+    def sum(self):
+        interface = get_interface()
+        return interface.reduction(self.df.name, self.field, GroupByOperations.sum)
 
 
 class DataFrame(object):
@@ -181,21 +189,23 @@ class DataFrame(object):
         interface = get_interface()
         interface.print_table(self.name)
     
-    def join(self, other, on, how='inner'):
+    def merge(self, other, on=None, left_on=None, right_on=None, how='inner'):
         interface = get_interface()
         result = DataFrame(None)
-
-        if isinstance(on, str):
-            k1 = k2 = [on]
-        elif isinstance(on, list):
-            k1 = k2 = on
-        else:
-            raise ValueError("Join keys have to be a list")
-
         join_type = lookup_join_type(how)
 
+        if left_on == None and right_on == None:
+            if on == None:
+                raise ValueError("Required argument 'on'")
+            else:
+                left_on = right_on = on
+
+        if on == None:
+            if left_on == None or right_on == None:
+                raise ValueError("Both left_on and right_on required")
+
         interface.join_tables(self.name, other.name, result.name,
-                              k1, k2, join_type)
+                              left_on, right_on, join_type)
         return result
 
     def groupby(self, by):

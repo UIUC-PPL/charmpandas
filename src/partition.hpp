@@ -26,6 +26,8 @@
 // This needs to have client id in the key
 extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
 
+TablePtr clean_metadata(TablePtr &table);
+
 class JoinOptions
 {
 public:
@@ -101,7 +103,6 @@ private:
     std::unordered_map<int, std::vector<GatherTableDataMsg*>> gather_buffer;
 
     std::vector<int> local_chares;
-    std::unordered_set<int> local_chares_set;
 
     // for joins
     int num_local_chares;
@@ -140,6 +141,8 @@ public:
 
     TablePtr get_local_table(int table_name);
 
+    void clear_local_chares();
+
     void register_local_chare(int index);
 
     void gather_table(GatherTableDataMsg* msg);
@@ -165,6 +168,8 @@ public:
 
     void operation_groupby(char* cmd);
 
+    //void operation_barrier(char* cmd);
+
     void execute_command(int epoch, int size, char* cmd);
 
     void start_join();
@@ -179,8 +184,6 @@ public:
 
     void receive_shuffle_data(RedistTableMsg* msg);
 
-    TablePtr clean_metadata(TablePtr &table);
-
     void complete_operation();
 
     void complete_groupby();
@@ -190,6 +193,19 @@ public:
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
 
     void partition_table(TablePtr table, int result_name);
+
+    void barrier_handler(int epoch);
+
+    //void aggregator_barrier(int agg_epoch);
+
+    //template<typename T>
+    void reduction_result_int(int result, int epoch);
+
+    void reduction_result_long(int64_t result, int epoch);
+
+    void reduction_result_float(float result, int epoch);
+
+    void start_polling();
 };
 
 
@@ -254,6 +270,12 @@ public:
 
     void operation_fetch_size(char* cmd);
 
+    void operation_barrier(char* cmd);
+
+    void operation_reduction(char* cmd);
+
+    ScalarPtr local_reduction(TablePtr& table, std::string& col_name, AggregateOperation& op);
+
     void aggregate_result(CkReductionMsg* msg);
 
     void execute_command(int epoch, int size, char* cmd);
@@ -263,6 +285,15 @@ public:
     arrow::Datum traverse_ast(char* &msg);
 
     void read_parquet(int table_name, std::string file_path);
+
+    template<typename T>
+    void reduce_scalar(ScalarPtr& scalar, AggregateOperation& op);
+
+    void reduction_result_int(int result);
+
+    void reduction_result_long(int64_t result);
+
+    void reduction_result_float(float result);
 };
 
 #endif

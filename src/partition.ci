@@ -35,6 +35,17 @@ module partition
         entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);
 
         entry void receive_shuffle_data(RedistTableMsg* msg);
+
+        entry [reductiontarget] void barrier_handler(int epoch);
+
+        //template <typename T>
+        entry void reduction_result_int(int result, int epoch);
+
+        entry void reduction_result_long(int64_t result, int epoch);
+
+        entry void reduction_result_float(float result, int epoch);
+
+        entry [reductiontarget] void start_polling();
     };
 
     array [1D] Partition
@@ -45,12 +56,18 @@ module partition
 
         entry [reductiontarget] void aggregate_result(CkReductionMsg* msg);
 
-        entry void poll()
+        entry [reductiontarget] void poll()
         {
             when receive_command[EPOCH] (int epoch, int size, char cmd[size])
                 serial "execute command" {
                     execute_command(epoch, size, cmd);
                 }
         };
+
+        entry [reductiontarget] void reduction_result_int(int result);
+
+        entry [reductiontarget] void reduction_result_long(int64_t result);
+
+        entry [reductiontarget] void reduction_result_float(float result);
     };
 }

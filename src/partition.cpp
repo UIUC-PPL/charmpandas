@@ -1,6 +1,8 @@
 #include <xxhash.h>
 #include <iostream>
 #include <fstream>
+#include <filesystem>
+#include <regex>
 #include "utils.hpp"
 #include "operations.hpp"
 #include "messaging.hpp"
@@ -8,14 +10,118 @@
 #include "serialize.hpp"
 #include "partition.hpp"
 #include "messaging.def.h"
+#define CK_TEMPLATES_ONLY
+#include "partition.def.h"
+#undef CK_TEMPLATES_ONLY
 #include "partition.def.h"
 
-#define MEM_LOGGING true
+#define MEM_LOGGING false
 #define MEM_LOG_DURATION 100
 
 #define TEMP_TABLE_OFFSET (1 << 30)
 
-Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_) 
+namespace fs = std::filesystem;
+
+
+TablePtr clean_metadata(TablePtr &table)
+{
+    std::vector<int> indices;
+    std::vector<std::string> field_names = table->schema()->field_names();
+    for (int i = 0; i < field_names.size(); i++)
+    {
+        if (field_names[i].rfind("local_index", 0) == 0 ||
+            field_names[i].rfind("home_partition", 0) == 0 ||
+            field_names[i].rfind("_mapped_key", 0) == 0)
+            continue;
+        int col_index = table->schema()->GetFieldIndex(field_names[i]);
+        indices.push_back(col_index);
+    }
+    return table->SelectColumns(indices).ValueOrDie();
+}
+
+std::string get_parent_dir(const std::string& path_str) 
+{
+    std::filesystem::path path(path_str);
+    return path.remove_filename().string();
+}
+
+std::vector<std::string> get_matching_files(std::string& path) 
+{
+    fs::path dir(get_parent_dir(path));
+    std::regex pattern(path);
+    std::vector<std::string> matches;
+    for (const auto& entry : fs::recursive_directory_iterator(dir)) {
+        if (fs::is_regular_file(entry) && 
+            std::regex_match(entry.path().string(), pattern)) {
+            matches.push_back(entry.path().string());
+        }
+    }
+    return matches;
+}
+
+
+template<typename T>
+void Partition::reduce_scalar(ScalarPtr& scalar, AggregateOperation& op) 
+{    
+    // Null check
+    if (!scalar->is_valid) {
+        CkAbort("Scalar is null");
+    }
+
+    switch (scalar->type->id())
+    {
+        case arrow::Type::INT32:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::Int32Scalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_int), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
+        case arrow::Type::INT64:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::Int64Scalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_long), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
+        case arrow::Type::FLOAT:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::FloatScalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_float), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
+        default:
+        {
+            CkAbort("Reduction over unsupported datatype %s\n", scalar->type->ToString().c_str());
+        }
+    }
+}
+
+
+//template<typename T>
+void Partition::reduction_result_int(int result)
+{
+    agg_proxy[0].reduction_result_int(result, EPOCH - 1);
+}
+
+
+void Partition::reduction_result_long(int64_t result)
+{
+    agg_proxy[0].reduction_result_long(result, EPOCH - 1);
+}
+
+
+void Partition::reduction_result_float(float result)
+{
+    agg_proxy[0].reduction_result_float(result, EPOCH - 1);
+}
+
+
+Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_)
     : num_partitions(num_partitions_)
     , agg_proxy(agg_proxy_)
     , EPOCH(0)
@@ -39,6 +145,7 @@ Partition::Partition(CkMigrateMessage* m)
     usesAtSync = true;
     //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
     //thisProxy[thisIndex].poll();
+
 }
 
 Partition::~Partition()
@@ -55,11 +162,19 @@ void Partition::pup(PUP::er &p)
     p | EPOCH;
     p | lb_period;
     pup_tables(p);
-    if (p.isUnpacking())
+    /*if (p.isPacking())
     {
-        CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
-        thisProxy[thisIndex].poll();
+        // deregister this chare with the aggregator
+        if (agg_proxy.ckLocalBranch() != NULL)
+            agg_proxy.ckLocalBranch()->deregister_local_chare(thisIndex);
     }
+    else if (p.isUnpacking())
+    {
+        // Register local chares with the aggregator
+        agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
+        //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
+        //thisProxy[thisIndex].poll();
+    }*/
 }
 
 void Partition::pup_tables(PUP::er &p)
@@ -155,8 +270,12 @@ inline void Partition::inc_epoch()
 
 void Partition::ResumeFromSync()
 {
-    //CkPrintf("Resume called\n");
-    thisProxy[thisIndex].poll();
+    CkPrintf("Resume called\n");
+    agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
+
+    int done = 1;
+    CkCallback cb(CkReductionTarget(Aggregator, start_polling), agg_proxy[0]);
+    contribute(sizeof(int), &done, CkReduction::sum_int, cb);
 }
 
 TablePtr Partition::get_table(int table_name)
@@ -210,7 +329,8 @@ void Partition::operation_read(char* cmd)
     int table_name = extract<int>(cmd);
     int path_size = extract<int>(cmd);
     std::string file_path(cmd, path_size);
-    CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
+    if (thisIndex == 0)
+        CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
     read_parquet(table_name, file_path);
     complete_operation();
 }
@@ -222,7 +342,7 @@ void Partition::operation_fetch(char* cmd)
     GatherTableDataMsg* msg;
     if (it != std::end(tables))
     {
-        auto table = tables[table_name];
+        auto table = clean_metadata(tables[table_name]);
         BufferPtr out;
         serialize(table, out);
         msg = new (out->size()) GatherTableDataMsg(EPOCH, out->size(), num_partitions);
@@ -354,6 +474,63 @@ void Partition::operation_fetch_size(char* cmd)
     complete_operation();
 }
 
+void Partition::operation_barrier(char* cmd)
+{
+    CkCallback cb(CkReductionTarget(Aggregator, barrier_handler), agg_proxy[0]);
+    contribute(sizeof(int), &EPOCH, CkReduction::min_int, cb);
+    complete_operation();
+}
+
+void Partition::operation_reduction(char* cmd)
+{
+    int table_name = extract<int>(cmd);
+    int col_size = extract<int>(cmd);
+    std::string col_name(cmd, col_size);
+    cmd += col_size;
+    AggregateOperation op = static_cast<AggregateOperation>(extract<int>(cmd));
+    TablePtr table = get_table(table_name);
+    //CkPrintf("[%i] Size = %i, col = %s, op = %i\n", thisIndex, table->num_rows(), col_name.c_str(), op);
+    ScalarPtr result = local_reduction(table, col_name, op);
+    
+    switch (result->type->id())
+    {
+        case arrow::Type::INT32:
+        {
+            reduce_scalar<int>(result, op);
+            break;
+        }
+
+        case arrow::Type::INT64:
+        {
+            reduce_scalar<int64_t>(result, op);
+            break;
+        }
+
+        case arrow::Type::FLOAT:
+        {
+            reduce_scalar<float>(result, op);
+            break;
+        }
+
+        case arrow::Type::DOUBLE:
+        {
+            reduce_scalar<double>(result, op);
+            break;
+        }
+    }
+    
+    //reduce_scalar(result, op, agg_proxy);
+    complete_operation();
+}
+
+ScalarPtr Partition::local_reduction(TablePtr &table, std::string &col_name, AggregateOperation &op)
+{
+    std::string oper = get_compute_function(op);
+    ChunkedArrayPtr col_array = table->GetColumnByName(col_name);
+    arrow::Datum result = arrow::compute::CallFunction(oper, {col_array}).ValueOrDie();
+    return result.scalar();
+}
+
 void Partition::aggregate_result(CkReductionMsg* msg)
 {
     /*CkAssert(thisIndex == 0);
@@ -427,6 +604,7 @@ void Partition::execute_command(int epoch, int size, char* cmd)
         {
             //CkPrintf("Rescale\n");
             ++EPOCH;
+            agg_proxy.ckLocalBranch()->clear_local_chares();
             AtSync();
             break;
         }
@@ -440,6 +618,18 @@ void Partition::execute_command(int epoch, int size, char* cmd)
         case Operation::FetchSize:
         {
             operation_fetch_size(cmd);
+            break;
+        }
+
+        case Operation::Barrier:
+        {
+            operation_barrier(cmd);
+            break;
+        }
+
+        case Operation::Reduction:
+        {
+            operation_reduction(cmd);
             break;
         }
     
@@ -522,86 +712,105 @@ arrow::Datum Partition::traverse_ast(char* &msg)
 
 void Partition::read_parquet(int table_name, std::string file_path)
 {
+    std::vector<std::string> files = get_matching_files(file_path);
     std::shared_ptr<arrow::io::ReadableFile> input_file;
-    input_file = arrow::io::ReadableFile::Open(file_path).ValueOrDie();
+    TablePtr read_tables = nullptr;
 
-    // Create a ParquetFileReader instance
-    std::unique_ptr<parquet::arrow::FileReader> reader;
-    parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
+    if (thisIndex == 0)
+        CkPrintf("[%d] Reading %i files\n", thisIndex, files.size());
 
-    // Get the file metadata
-    std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
-
-    int num_rows = file_metadata->num_rows();
-    int nrows_per_partition = num_rows / num_partitions;
-    int start_row = nrows_per_partition * thisIndex;
-    int nextra_rows = num_rows - num_partitions * nrows_per_partition;
-
-    if (thisIndex < nextra_rows)
+    for (int i = 0; i < files.size(); i++)
     {
-        start_row += thisIndex;
-        nrows_per_partition++;
-    }
-    else
-    {
-        start_row += nextra_rows;
-    }
+        std::string file = files[i];
+        input_file = arrow::io::ReadableFile::Open(file).ValueOrDie();
 
+        // Create a ParquetFileReader instance
+        std::unique_ptr<parquet::arrow::FileReader> reader;
+        parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
 
-    int num_rows_before = start_row;
-    int num_row_groups = file_metadata->num_row_groups();
+        // Get the file metadata
+        std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
 
-    // Variables to keep track of rows read
-    int64_t rows_read = 0;
-    int64_t rows_to_read = nrows_per_partition;
+        int num_rows = file_metadata->num_rows();
 
-    std::vector<TablePtr> row_tables;
-    for (int i = 0; i < num_row_groups && rows_to_read > 0; ++i) 
-    {
-        int64_t row_group_num_rows = file_metadata->RowGroup(i)->num_rows();
+        //if (thisIndex == 0)
+        //    CkPrintf("[%d] Reading %i rows from %s\n", thisIndex, num_rows, file.c_str());
 
-        if (start_row >= row_group_num_rows) 
+        int nrows_per_partition = num_rows / num_partitions;
+        int start_row = nrows_per_partition * thisIndex;
+        int nextra_rows = num_rows - num_partitions * nrows_per_partition;
+
+        if (thisIndex < nextra_rows)
         {
-            // Skip this row group
-            start_row -= row_group_num_rows;
-            continue;
+            start_row += thisIndex;
+            nrows_per_partition++;
+        }
+        else
+        {
+            start_row += nextra_rows;
         }
 
-        // Calculate how many rows to read from this row group
-        int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
+        int num_rows_before = start_row;
+        int num_row_groups = file_metadata->num_row_groups();
 
-        // Read the rows
-        TablePtr table;
-        reader->ReadRowGroup(i, &table);
-        TablePtr sliced_table = table->Slice(start_row, rows_in_group);
-        row_tables.push_back(sliced_table);
+        // Variables to keep track of rows read
+        int64_t rows_read = 0;
+        int64_t rows_to_read = nrows_per_partition;
 
-        // Update counters
-        rows_read += table->num_rows();
-        rows_to_read -= table->num_rows();
-        start_row = 0;  // Reset start_row for subsequent row groups
+        std::vector<TablePtr> row_tables;
+        for (int i = 0; i < num_row_groups && rows_to_read > 0; ++i) 
+        {
+            int64_t row_group_num_rows = file_metadata->RowGroup(i)->num_rows();
+
+            if (start_row >= row_group_num_rows) 
+            {
+                // Skip this row group
+                start_row -= row_group_num_rows;
+                continue;
+            }
+
+            // Calculate how many rows to read from this row group
+            int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
+
+            // Read the rows
+            TablePtr table;
+            reader->ReadRowGroup(i, &table);
+            TablePtr sliced_table = table->Slice(start_row, rows_in_group);
+            row_tables.push_back(sliced_table);
+
+            // Update counters
+            rows_read += sliced_table->num_rows();
+            rows_to_read -= sliced_table->num_rows();
+            start_row = 0;  // Reset start_row for subsequent row groups
+        }
+
+        TablePtr combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
+
+        if (read_tables == nullptr)
+            read_tables = combined;
+        else
+            read_tables = arrow::ConcatenateTables({read_tables, combined}).ValueOrDie();
     }
 
-    TablePtr combined = arrow::ConcatenateTables(row_tables).ValueOrDie();
-
     arrow::Int32Builder builder;
-    builder.Reserve(combined->num_rows());
+    builder.Reserve(read_tables->num_rows());
 
-    for (int32_t i = 0; i < combined->num_rows(); ++i)
+    for (int32_t i = 0; i < read_tables->num_rows(); ++i)
         builder.Append(i);
 
     ArrayPtr index_array;
     builder.Finish(&index_array);
 
-    combined = set_column(combined, "local_index", arrow::Datum(
+    read_tables = set_column(read_tables, "local_index", arrow::Datum(
         arrow::ChunkedArray::Make({index_array}).ValueOrDie()));
     ArrayPtr home_partition_array = arrow::MakeArrayFromScalar(
         *std::make_shared<arrow::Int32Scalar>(thisIndex), 
-        combined->num_rows()).ValueOrDie();
-    tables[table_name] = set_column(combined, "home_partition", arrow::Datum(
-        arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()));
+        read_tables->num_rows()).ValueOrDie();
+    tables[table_name] = set_column(read_tables, "home_partition", arrow::Datum(
+        arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()))->CombineChunks().ValueOrDie();
 
-    CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
+    
+    //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
 }
 
 Aggregator::Aggregator(CProxy_Main main_proxy_)
@@ -612,6 +821,7 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
         , redist_odf(8)
         , expected_rows(0)
         , EPOCH(0)
+        , next_temp_name(0)
 {
     if (MEM_LOGGING)
     {
@@ -623,6 +833,7 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
 Aggregator::Aggregator(CkMigrateMessage* m) 
         : CBase_Aggregator(m)
         , expected_rows(0)
+        , num_local_chares(0)
         , join_opts(nullptr)
         , groupby_opts(nullptr)
 {
@@ -639,6 +850,8 @@ void Aggregator::pup(PUP::er &p)
     p | redist_odf;
     p | next_temp_name;
     p | EPOCH;
+    p | num_partitions;
+    p | partition_proxy;
 }
 
 void Aggregator::init_memory_logging()
@@ -664,11 +877,17 @@ void Aggregator::init_done()
     main_proxy.init_done();
 }
 
+void Aggregator::clear_local_chares()
+{
+    num_local_chares = 0;
+    // FIXME this is inefficient, but probably okay
+    local_chares.clear();
+}
+
 void Aggregator::register_local_chare(int index)
 {
     num_local_chares++;
     local_chares.push_back(index);
-    local_chares_set.insert(index);
 }
 
 void Aggregator::gather_table(GatherTableDataMsg* msg)
@@ -719,6 +938,37 @@ void Aggregator::clear_gather_buffer(int epoch)
 void Aggregator::deposit_size(int partition, int local_size)
 {
     //if (table_sizes)
+}
+
+//template<typename T>
+void Aggregator::reduction_result_int(int result, int epoch)
+{
+    CkAssert(CkMyPe() == 0);
+    char* ret = (char*) malloc(sizeof(int) + sizeof(int));
+    int type = arrow::Type::INT32;
+    std::memcpy(ret, &type, sizeof(int));
+    std::memcpy(ret + sizeof(int), &result, sizeof(int));
+    CcsSendDelayedReply(fetch_reply[epoch], sizeof(int) + sizeof(int), ret);
+}
+
+void Aggregator::reduction_result_long(int64_t result, int epoch)
+{
+    CkAssert(CkMyPe() == 0);
+    char* ret = (char*) malloc(sizeof(int) + sizeof(int64_t));
+    int type = arrow::Type::INT64;
+    std::memcpy(ret, &type, sizeof(int));
+    std::memcpy(ret + sizeof(int), &result, sizeof(int64_t));
+    CcsSendDelayedReply(fetch_reply[epoch], sizeof(int) + sizeof(int64_t), ret);
+}
+
+void Aggregator::reduction_result_float(float result, int epoch)
+{
+    CkAssert(CkMyPe() == 0);
+    char* ret = (char*) malloc(sizeof(int) + sizeof(float));
+    int type = arrow::Type::FLOAT;
+    std::memcpy(ret, &type, sizeof(int));
+    std::memcpy(ret + sizeof(int), &result, sizeof(float));
+    CcsSendDelayedReply(fetch_reply[epoch], sizeof(int) + sizeof(float), ret);
 }
 
 void Aggregator::fetch_callback(int epoch, BufferPtr &out)
@@ -812,6 +1062,11 @@ void Aggregator::operation_join(char* cmd)
     start_join();
 }
 
+void Aggregator::barrier_handler(int epoch)
+{
+    CcsSendDelayedReply(fetch_reply[epoch], 0, NULL);
+}
+
 void Aggregator::handle_deletions(char* &cmd)
 {
     char* del_cmd;
@@ -879,19 +1134,52 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
         for (int j = 0; j < field_arrays.size(); j++)
         {
             ChunkedArrayPtr arr = field_arrays[j];
-            if (arr->type()->id() == arrow::Type::STRING)
+            switch (arr->type()->id())
             {
-                std::string key = std::dynamic_pointer_cast<arrow::StringScalar>(arr->GetScalar(i).ValueOrDie())->value->ToString();
-                XXH32_update(hash_state, key.c_str(), key.size());
-            }
-            else if (arr->type()->id() == arrow::Type::INT32)
-            {
-                int32_t key = std::dynamic_pointer_cast<arrow::Int32Scalar>(arr->GetScalar(i).ValueOrDie())->value;
-                XXH32_update(hash_state, &key, sizeof(int32_t));
-            }
-            else
-            {
-                CkAbort("Illegal type for join keys");
+                case arrow::Type::STRING:
+                {
+                    std::string key = std::dynamic_pointer_cast<arrow::StringScalar>(
+                        arr->GetScalar(i).ValueOrDie())->value->ToString();
+                    XXH32_update(hash_state, key.c_str(), key.size());
+                    break;
+                }
+
+                case arrow::Type::INT32:
+                {
+                    int32_t key = std::dynamic_pointer_cast<arrow::Int32Scalar>(
+                        arr->GetScalar(i).ValueOrDie())->value;
+                    XXH32_update(hash_state, &key, sizeof(int32_t));
+                    break;
+                }
+
+                case arrow::Type::INT64:
+                {
+                    int64_t key = std::dynamic_pointer_cast<arrow::Int64Scalar>(
+                        arr->GetScalar(i).ValueOrDie())->value;
+                    XXH32_update(hash_state, &key, sizeof(int64_t));   
+                    break;
+                }
+
+                case arrow::Type::FLOAT:
+                {
+                    float key = std::dynamic_pointer_cast<arrow::FloatScalar>(
+                        arr->GetScalar(i).ValueOrDie())->value;
+                    XXH32_update(hash_state, &key, sizeof(float));
+                    break;
+                }
+
+                case arrow::Type::DOUBLE:
+                {
+                    double key = std::dynamic_pointer_cast<arrow::DoubleScalar>(
+                        arr->GetScalar(i).ValueOrDie())->value;
+                    XXH32_update(hash_state, &key, sizeof(double));
+                    break;
+                }
+
+                default:
+                {
+                    CkAbort("Not implemented shuffling on this key type yet!");
+                }
             }
         }
 
@@ -922,7 +1210,7 @@ void Aggregator::redistribute(std::vector<int> table_names, std::vector<std::vec
     redist_operation = oper;
     for (int i = 0; i < table_names.size(); i++)
     {
-        if (tables[table_names[i]] != nullptr)
+        if (tables[table_names[i]] != nullptr && tables[table_names[i]]->num_rows() > 0)
             tables[table_names[i]] = map_keys(tables[table_names[i]], keys[i]);
     }
 
@@ -969,10 +1257,10 @@ void Aggregator::assign_keys(int num_elements, int* global_hist)
         pe_loads.push(pe_load);
     }
 
-    CkPrintf("Loads after reshuffling:\n");
+    /*CkPrintf("Loads after reshuffling:\n");
     for (int i = 0; i < CkNumPes(); i++)
         CkPrintf("%i, ", expected_loads[i]);
-    CkPrintf("\n");
+    CkPrintf("\n");*/
 
     thisProxy.shuffle_data(pe_map, expected_loads);
 }
@@ -1111,38 +1399,24 @@ void Aggregator::groupby_callback()
         }
     }
 
-    TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
-    result = clean_metadata(result);
-    partition_table(result, groupby_opts->result_name);
+    if (tables[TEMP_TABLE_OFFSET + next_temp_name] != nullptr && tables[TEMP_TABLE_OFFSET + next_temp_name]->num_rows() > 0)
+    {
+        TablePtr result = local_aggregation(tables[TEMP_TABLE_OFFSET + next_temp_name], *groupby_opts->opts);
+        result = clean_metadata(result);
+        partition_table(result, groupby_opts->result_name);
+    }
+    
     complete_groupby();
 }
 
 void Aggregator::join_callback()
 {
     TablePtr result = local_join(tables[join_opts->table1], tables[join_opts->table2], *join_opts->opts);
-    CkPrintf("Mem usage before clean metadata = %d\n", CmiMemoryUsage());
     result = clean_metadata(result);
-    CkPrintf("Mem usage after clean metadata = %d\n", CmiMemoryUsage());
     partition_table(tables[join_opts->table1], join_opts->table1);
     partition_table(tables[join_opts->table2], join_opts->table2);
     partition_table(result, join_opts->result_name);
     complete_join();
-}
-
-TablePtr Aggregator::clean_metadata(TablePtr &table)
-{
-    std::vector<int> indices;
-    std::vector<std::string> field_names = table->schema()->field_names();
-    for (int i = 0; i < field_names.size(); i++)
-    {
-        if (field_names[i].rfind("local_index_", 0) == 0 ||
-            field_names[i].rfind("home_partition_", 0) == 0 ||
-            field_names[i].rfind("_mapped_key_", 0) == 0)
-            continue;
-        int col_index = table->schema()->GetFieldIndex(field_names[i]);
-        indices.push_back(col_index);
-    }
-    return table->SelectColumns(indices).ValueOrDie();
 }
 
 void Aggregator::receive_shuffle_data(RedistTableMsg* msg)
@@ -1185,7 +1459,7 @@ void Aggregator::complete_operation()
 
 void Aggregator::complete_groupby()
 {
-    CkPrintf("PE%i> Completed groupby\n", CkMyPe());
+    //CkPrintf("PE%i> Completed groupby\n", CkMyPe());
     tables.erase(groupby_opts->table_name);
     delete groupby_opts->opts;
     delete groupby_opts;
@@ -1204,7 +1478,7 @@ void Aggregator::complete_groupby()
 
 void Aggregator::complete_join()
 {
-    CkPrintf("PE%i> Completed join\n", CkMyPe());
+    //CkPrintf("PE%i> Completed join\n", CkMyPe());
     tables.erase(join_opts->table1);
     tables.erase(join_opts->table2);
     delete join_opts->opts;
@@ -1240,6 +1514,8 @@ void Aggregator::partition_table(TablePtr table, int result_name)
     int offset = 0;
     for (int i = 0; i < num_local_chares; i++)
     {
+        if (remain_rows == 0)
+            return;
         int index = local_chares[i];
         Partition* partition = partition_proxy[index].ckLocal();
         int rows_per_chare = remain_rows / remain_chares;
@@ -1248,4 +1524,11 @@ void Aggregator::partition_table(TablePtr table, int result_name)
         remain_rows -= rows_per_chare;
         remain_chares--;
     }
+}
+
+void Aggregator::start_polling()
+{
+    CkPrintf("Resume polling\n");
+    thisProxy.poll();
+    partition_proxy.poll();
 }
