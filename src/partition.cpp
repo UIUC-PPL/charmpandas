@@ -329,9 +329,29 @@ void Partition::operation_read(char* cmd)
     int table_name = extract<int>(cmd);
     int path_size = extract<int>(cmd);
     std::string file_path(cmd, path_size);
-    if (thisIndex == 0)
+    cmd += path_size;
+    
+    // Extract column selection if present
+    std::vector<std::string> columns;
+    int num_columns = extract<int>(cmd);
+    for (int i = 0; i < num_columns; i++) {
+        int col_size = extract<int>(cmd);
+        columns.push_back(std::string(cmd, col_size));
+        cmd += col_size;
+    }
+    
+    if (thisIndex == 0) {
         CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
-    read_parquet(table_name, file_path);
+        if (!columns.empty()) {
+            CkPrintf("[%d] Selected columns:", thisIndex);
+            for (const auto& col : columns) {
+                CkPrintf(" %s", col.c_str());
+            }
+            CkPrintf("\n");
+        }
+    }
+    
+    read_parquet(table_name, file_path, columns);
     complete_operation();
 }
 
@@ -710,7 +730,7 @@ arrow::Datum Partition::traverse_ast(char* &msg)
     }
 }
 
-void Partition::read_parquet(int table_name, std::string file_path)
+void Partition::read_parquet(int table_name, std::string file_path, const std::vector<std::string>& columns)
 {
     std::vector<std::string> files = get_matching_files(file_path);
     std::shared_ptr<arrow::io::ReadableFile> input_file;
@@ -724,18 +744,31 @@ void Partition::read_parquet(int table_name, std::string file_path)
         std::string file = files[i];
         input_file = arrow::io::ReadableFile::Open(file).ValueOrDie();
 
-        // Create a ParquetFileReader instance
+        // Create a ParquetFileReader instance with options for column selection
         std::unique_ptr<parquet::arrow::FileReader> reader;
         parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
 
         // Get the file metadata
         std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
 
+        // Get schema and create column selection
+        std::shared_ptr<arrow::Schema> schema;
+        reader->GetSchema(&schema);
+        std::vector<int> column_indices;
+        
+        // Convert column names to indices if columns are specified
+        if (!columns.empty()) {
+            for (const auto& col : columns) {
+                int idx = schema->GetFieldIndex(col);
+                if (idx != -1) {
+                    column_indices.push_back(idx);
+                } else {
+                    CkPrintf("Warning: Column '%s' not found in parquet file\n", col.c_str());
+                }
+            }
+        }
+        
         int num_rows = file_metadata->num_rows();
-
-        //if (thisIndex == 0)
-        //    CkPrintf("[%d] Reading %i rows from %s\n", thisIndex, num_rows, file.c_str());
-
         int nrows_per_partition = num_rows / num_partitions;
         int start_row = nrows_per_partition * thisIndex;
         int nextra_rows = num_rows - num_partitions * nrows_per_partition;
@@ -772,9 +805,13 @@ void Partition::read_parquet(int table_name, std::string file_path)
             // Calculate how many rows to read from this row group
             int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
 
-            // Read the rows
+            // Read the rows with column selection
             TablePtr table;
-            reader->ReadRowGroup(i, &table);
+            if (column_indices.empty()) {
+                reader->ReadRowGroup(i, &table);
+            } else {
+                reader->ReadRowGroup(i, column_indices, &table);
+            }
             TablePtr sliced_table = table->Slice(start_row, rows_in_group);
             row_tables.push_back(sliced_table);
 
@@ -808,9 +845,6 @@ void Partition::read_parquet(int table_name, std::string file_path)
         read_tables->num_rows()).ValueOrDie();
     tables[table_name] = set_column(read_tables, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()))->CombineChunks().ValueOrDie();
-
-    
-    //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
 }
 
 Aggregator::Aggregator(CProxy_Main main_proxy_)

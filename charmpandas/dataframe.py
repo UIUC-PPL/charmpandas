@@ -151,11 +151,14 @@ class DataFrameField(object):
 
 
 class DataFrame(object):
-    def __init__(self, data):
+    def __init__(self, data, cols=None):
         interface = get_interface()
         self.name = get_table_name()
         if isinstance(data, str):
-            interface.read_parquet(self.name, data)
+            if cols:
+                interface.read_parquet(self.name, data, cols)
+            else:
+                interface.read_parquet(self.name, data)
         elif data == None:
             # this is a result of some operation
             pass
