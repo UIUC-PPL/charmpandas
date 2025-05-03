@@ -15,6 +15,7 @@
 #include "arrow/acero/exec_plan.h"
 #include <arrow/acero/options.h>
 #include "arrow/compute/expression.h"
+#include "arrow/dataset/file_ipc.h"
 #include "types.hpp"
 #include "partition.decl.h"
 
@@ -284,7 +285,9 @@ public:
 
     arrow::Datum traverse_ast(char* &msg);
 
-    void read_parquet(int table_name, std::string file_path);
+    void read_parquet(int table_name, std::string file_path, 
+        const std::vector<std::string>& columns = std::vector<std::string>(),
+        const std::vector<std::tuple<std::string, std::string, std::string>>& filters = std::vector<std::tuple<std::string, std::string, std::string>>());
 
     template<typename T>
     void reduce_scalar(ScalarPtr& scalar, AggregateOperation& op);
