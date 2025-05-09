@@ -30,6 +30,12 @@ module partition
                 }
         };
 
+        entry void collect_samples(int num_samples, int64_t samples[num_samples]);
+
+        entry void receive_splitters(int num_splitters, int64_t splitters[num_splitters]);
+
+        entry void receive_sort_tables(SortTableMsg* msg);
+
         entry [reductiontarget] void assign_keys(int num_elements, int global_hist[num_elements]);
         
         entry void shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads);

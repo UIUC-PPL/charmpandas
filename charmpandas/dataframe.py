@@ -210,3 +210,16 @@ class DataFrame(object):
 
     def groupby(self, by):
         return DataFrameGroupBy(self, by)
+
+    def sort_values(self, by, ascending=True):
+        interface = get_interface()
+        result = DataFrame(None)
+
+        if isinstance(by, list) and len(by) > 1:
+            print("Sorting by multiple columns not supported yet. Sorting by first column only.")
+
+        if isinstance(by, str):  # if `by` is a single field, convert to list
+            by = [by]
+
+        interface.sort_table(self.name, by, ascending, result.name)
+        return result

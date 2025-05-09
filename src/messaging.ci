@@ -11,6 +11,11 @@ module messaging
         char data[];
     };
 
+    message SortTableMsg
+    {
+        char data[];
+    };
+
     message RemoteTableMsg
     {
         char data[];
