@@ -57,6 +57,20 @@ public:
     {}
 };
 
+class SortValuesOptions
+{
+public:
+    int table_name;
+    int result_name;
+    std::vector<arrow::compute::SortKey> sort_keys;
+
+    SortValuesOptions(int table_name_, int result_name_, std::vector<arrow::compute::SortKey> sort_keys_)
+        : table_name(table_name_)
+        , result_name(result_name_)
+        , sort_keys(sort_keys_)
+    {}
+};
+
 class PELoad
 {
 public:
@@ -119,6 +133,12 @@ private:
     JoinOptions* join_opts;
     GroupByOptions* groupby_opts;
 
+    // for sorting
+    int agg_samples_collected;
+    int sort_tables_collected;
+    std::vector<int64_t> all_samples;
+    SortValuesOptions* sort_values_opts;
+
     int EPOCH;
 
 public:
@@ -168,6 +188,14 @@ public:
 
     void operation_groupby(char* cmd);
 
+    void operation_sort_values(char* cmd);
+
+    void collect_samples(int num_samples, int64_t samples[num_samples]);
+
+    void receive_splitters(int num_splitters, int64_t splitters[num_splitters]);
+
+    void receive_sort_tables(SortTableMsg* msg);
+
     //void operation_barrier(char* cmd);
 
     void execute_command(int epoch, int size, char* cmd);
@@ -189,6 +217,8 @@ public:
     void complete_groupby();
 
     void complete_join();
+
+    void complete_sort_values();
 
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
 

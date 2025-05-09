@@ -65,6 +65,7 @@ class Operations(object):
     fetch_size = 10
     barrier = 11
     reduction = 12
+    sort_values = 13
 
 
 class GroupByOperations(object):
@@ -315,6 +316,26 @@ class CCSInterface(Interface):
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
         self.send_command_async(Handlers.async_handler, cmd)
+
+    def sort_table(self, table_name, by, ascending, result_name):
+        self.activity_handler()
+        cmd = self.get_header(self.group_epoch)
+
+        gcmd = self.get_deletion_header()
+        gcmd += to_bytes(Operations.sort_values, 'i')
+        gcmd += to_bytes(table_name, 'i')
+        gcmd += to_bytes(result_name, 'i')
+
+        gcmd += to_bytes(len(by), 'i')
+        for b in by:
+            gcmd += string_bytes(b)
+
+        gcmd += to_bytes(ascending, 'B')
+
+        cmd += to_bytes(len(gcmd), 'i')
+        cmd += gcmd
+        self.send_command_async(Handlers.async_group_handler, cmd)
+        self.group_epoch += 1
 
     def reduction(self, name, field, op):
         self.activity_handler()
