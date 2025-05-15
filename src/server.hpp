@@ -41,7 +41,7 @@ public:
         }
         memcpy(&bitmap[CkNumPes()], &new_procs, sizeof(int));
         bitmap[CkNumPes()+sizeof(int)] = '\0';
-        rescale(pass_msg);
+        // rescale(pass_msg);
         CkPrintf("Rescale epoch = %i\n", epoch);
         //main_proxy.ckLocal()->creation_reply = CcsDelayReply();
         partition_ptr->receive_command(epoch, size, cmd);
