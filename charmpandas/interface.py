@@ -183,7 +183,7 @@ class CCSInterface(Interface):
     def mark_deletion(self, table_name):
         self.deletion_buffer.append(table_name)
 
-    def read_parquet(self, table_name, file_path):
+    def read_parquet(self, table_name, file_path, columns=None, filters=None):
         self.activity_handler()
         cmd = self.get_header(self.epoch)
 
@@ -191,6 +191,24 @@ class CCSInterface(Interface):
         gcmd += to_bytes(Operations.read, 'i')
         gcmd += to_bytes(table_name, 'i')
         gcmd += string_bytes(file_path)
+        
+        # Add columns
+        if columns:
+            gcmd += to_bytes(len(columns), 'i')
+            for col in columns:
+                gcmd += string_bytes(col)
+        else:
+            gcmd += to_bytes(0, 'i')  # No columns specified
+            
+        # Add filters
+        if filters:
+            gcmd += to_bytes(len(filters), 'i')  # Number of filters
+            for col, op, value in filters:
+                gcmd += string_bytes(col)    # Column name
+                gcmd += string_bytes(op)     # Operator
+                gcmd += string_bytes(str(value))  # Value (converted to string)
+        else:
+            gcmd += to_bytes(0, 'i')  # No filters specified
 
         cmd += to_bytes(len(gcmd), 'i')
         cmd += gcmd
@@ -406,13 +424,15 @@ class CCSInterface(Interface):
 
 
 class LocalCluster(CCSInterface):
-    def __init__(self, min_pes=1, max_pes=1, odf=4, activity_timeout=60):
+    def __init__(self, charmpandas_home, local_port=1234, min_pes=1, max_pes=1, odf=4, activity_timeout=60):
         self.min_pes = min_pes
         self.max_pes = max_pes
+        self.local_port = local_port
+        self.charmpandas_home = charmpandas_home
         self.logfile = open("server.log", "w")
         self._write_nodelist(max_pes)
         self._run_server()
-        super().__init__("127.0.0.1", 1234, odf=odf, activity_timeout=activity_timeout)
+        super().__init__("127.0.0.1", local_port, odf=odf, activity_timeout=activity_timeout)
 
     def _write_nodelist(self, num_pes):
         nodestr = "host localhost\n" * num_pes
@@ -430,10 +450,13 @@ class LocalCluster(CCSInterface):
             self.current_pes = self.max_pes
 
     def _run_server(self):
-        self.process = subprocess.Popen(['/home/adityapb1546/charm/charmpandas/src/charmrun +p%i '
-                                '/home/adityapb1546/charm/charmpandas/src/server.out +balancer MetisLB +LBDebug 3'
-                                ' ++server ++server-port 1234 ++nodelist ./localnodelist' % self.max_pes],
-                                shell=True, text=True, stdout=self.logfile, stderr=subprocess.STDOUT)
+        charmrun_path = f"{self.charmpandas_home}/src/charmrun"
+        serverout_path = f"{self.charmpandas_home}/src/server.out"
+        self.process = subprocess.Popen([
+            f'{charmrun_path} +p{self.max_pes} '
+            f'{serverout_path} +balancer MetisLB +LBDebug 3 ++server ++local ++server-port {self.local_port} ++nodelist ./localnodelist'
+        ],
+        shell=True, text=True, stdout=self.logfile, stderr=subprocess.STDOUT)
         time.sleep(5)
         self.current_pes = self.max_pes
 

@@ -329,9 +329,64 @@ void Partition::operation_read(char* cmd)
     int table_name = extract<int>(cmd);
     int path_size = extract<int>(cmd);
     std::string file_path(cmd, path_size);
-    if (thisIndex == 0)
+    // file_path.reserve(path_size);
+    // for (int i = 0; i < path_size; i++) {
+    //     file_path.push_back(cmd[i]);
+    // }
+    cmd += path_size;    
+    // Extract column selection if present
+    std::vector<std::string> columns;
+    int num_columns = extract<int>(cmd);
+    for (int i = 0; i < num_columns; i++) {
+        int col_size = extract<int>(cmd);
+        columns.push_back(std::string(cmd, col_size));
+        cmd += col_size;
+    }
+    
+    // Extract filters if present
+    std::vector<std::tuple<std::string, std::string, std::string>> filters;
+    int num_filters = extract<int>(cmd);
+    for (int i = 0; i < num_filters; i++) {
+        // Extract column name
+        int col_name_size = extract<int>(cmd);
+        std::string col_name(cmd, col_name_size);
+        cmd += col_name_size;
+        
+        // Extract operator
+        int op_size = extract<int>(cmd);
+        std::string op(cmd, op_size);
+        cmd += op_size;
+        
+        // Extract value
+        int value_size = extract<int>(cmd);
+        std::string value(cmd, value_size);
+        cmd += value_size;
+        
+        filters.push_back(std::make_tuple(col_name, op, value));
+    }
+    
+    // if (thisIndex == 0) {
         CkPrintf("[%d] Reading file: %s\n", thisIndex, file_path.c_str());
-    read_parquet(table_name, file_path);
+        if (!columns.empty()) {
+            CkPrintf("[%d] Selected columns:", thisIndex);
+            for (const auto& col : columns) {
+                CkPrintf(" %s", col.c_str());
+            }
+            CkPrintf("\n");
+        }
+        if (!filters.empty()) {
+            CkPrintf("[%d] Applying filters:", thisIndex);
+            for (const auto& filter : filters) {
+                CkPrintf(" %s %s %s;", 
+                    std::get<0>(filter).c_str(),
+                    std::get<1>(filter).c_str(),
+                    std::get<2>(filter).c_str());
+            }
+            CkPrintf("\n");
+        }
+    // }
+    
+    read_parquet(table_name, file_path, columns, filters);
     complete_operation();
 }
 
@@ -710,32 +765,102 @@ arrow::Datum Partition::traverse_ast(char* &msg)
     }
 }
 
-void Partition::read_parquet(int table_name, std::string file_path)
+void Partition::read_parquet(int table_name, std::string file_path, const std::vector<std::string>& columns,
+    const std::vector<std::tuple<std::string, std::string, std::string>>& filters)
 {
     std::vector<std::string> files = get_matching_files(file_path);
     std::shared_ptr<arrow::io::ReadableFile> input_file;
     TablePtr read_tables = nullptr;
 
-    if (thisIndex == 0)
-        CkPrintf("[%d] Reading %i files\n", thisIndex, files.size());
+    // if (thisIndex == 0)
+        // CkPrintf("[%d] Reading %i files\n", thisIndex, files.size());
+
+        // Construct filter expression once
+    arrow::compute::Expression filter_expr = arrow::compute::literal(true);
+    if (!filters.empty()) {
+        for (const auto& filter : filters) {
+            const std::string& col_name = std::get<0>(filter);
+            const std::string& op = std::get<1>(filter);
+            const auto& value = std::get<2>(filter);
+            
+            auto field_ref = arrow::compute::field_ref(col_name);
+            arrow::compute::Expression expr;
+
+            // Try to parse value as int or float, otherwise use as string
+            arrow::compute::Expression value_expr;
+            try {
+                size_t idx;
+                int64_t ival = std::stoll(value, &idx);
+                if (idx == value.size()) {
+                    value_expr = arrow::compute::literal(ival);
+                } else {
+                    throw std::invalid_argument("");
+                }
+            } catch (...) {
+                try {
+                    size_t idx;
+                    double dval = std::stod(value, &idx);
+                    if (idx == value.size()) {
+                        value_expr = arrow::compute::literal(dval);
+                    } else {
+                        throw std::invalid_argument("");
+                    }
+                } catch (...) {
+                    value_expr = arrow::compute::literal(value);
+                }
+            }
+
+            if (op == "==") {
+                expr = arrow::compute::equal(field_ref, value_expr);
+            } else if (op == "!=") {
+                expr = arrow::compute::not_equal(field_ref, value_expr);
+            } else if (op == ">") {
+                expr = arrow::compute::greater(field_ref, value_expr);
+            } else if (op == ">=") {
+                expr = arrow::compute::greater_equal(field_ref, value_expr);
+            } else if (op == "<") {
+                expr = arrow::compute::less(field_ref, value_expr);
+            } else if (op == "<=") {
+                expr = arrow::compute::less_equal(field_ref, value_expr);
+            }
+            
+            filter_expr = arrow::compute::and_(filter_expr, expr);
+        }
+    }
+
+    // CkPrintf("[DEBUG] filter_expr: %s\n", filter_expr.ToString().c_str());
 
     for (int i = 0; i < files.size(); i++)
     {
         std::string file = files[i];
+        // CkPrintf("Reading file-%s\n", file.c_str());
         input_file = arrow::io::ReadableFile::Open(file).ValueOrDie();
 
-        // Create a ParquetFileReader instance
+        // Create a ParquetFileReader instance with options for column selection
         std::unique_ptr<parquet::arrow::FileReader> reader;
         parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
 
         // Get the file metadata
         std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
 
+        // Get schema and create column selection
+        std::shared_ptr<arrow::Schema> schema;
+        reader->GetSchema(&schema);
+        std::vector<int> column_indices;
+        
+        // Convert column names to indices if columns are specified
+        if (!columns.empty()) {
+            for (const auto& col : columns) {
+                int idx = schema->GetFieldIndex(col);
+                if (idx != -1) {
+                    column_indices.push_back(idx);
+                } else {
+                    CkPrintf("Warning: Column '%s' not found in parquet file\n", col.c_str());
+                }
+            }
+        }
+        
         int num_rows = file_metadata->num_rows();
-
-        //if (thisIndex == 0)
-        //    CkPrintf("[%d] Reading %i rows from %s\n", thisIndex, num_rows, file.c_str());
-
         int nrows_per_partition = num_rows / num_partitions;
         int start_row = nrows_per_partition * thisIndex;
         int nextra_rows = num_rows - num_partitions * nrows_per_partition;
@@ -772,9 +897,39 @@ void Partition::read_parquet(int table_name, std::string file_path)
             // Calculate how many rows to read from this row group
             int64_t rows_in_group = std::min(rows_to_read, row_group_num_rows - start_row);
 
-            // Read the rows
+            // Read the rows with column selection
             TablePtr table;
-            reader->ReadRowGroup(i, &table);
+            if (column_indices.empty()) {
+                reader->ReadRowGroup(i, &table);
+            } else {
+                reader->ReadRowGroup(i, column_indices, &table);
+            }
+
+                        // Apply filters if any exist
+            if (table && !filters.empty()) {
+                std::shared_ptr<arrow::dataset::Dataset> dataset =
+                    std::make_shared<arrow::dataset::InMemoryDataset>(table);
+
+                // 2: Build ScannerOptions for a Scanner to do a basic filter operation
+                auto maybe_builder = dataset->NewScan();
+                auto builder = maybe_builder.ValueOrDie();
+                builder->Filter(filter_expr);
+                auto maybe_scanner = builder->Finish();
+                auto scanner = maybe_scanner.ValueOrDie();
+
+                // 4: Perform the Scan and make a Table with the result
+                // CkPrintf("[DEBUG] Before scanner->ToTable() on partition %d, row group %d\n", thisIndex, i);
+                auto result = scanner->ToTable();
+                if (!result.ok()) {
+                    // CkPrintf("[ERROR] scanner->ToTable() failed on partition %d, row group %d: %s\n", thisIndex, i, result.status().ToString().c_str());
+                } else {
+                    // CkPrintf("[DEBUG] scanner->ToTable() succeeded on partition %d, row group %d\n", thisIndex, i);
+                    table = result.ValueOrDie();
+                    // CkPrintf("[DEBUG] Filtered table has %lld rows and %d columns\n", (long long)table->num_rows(), table->num_columns());
+                }
+            }
+
+            
             TablePtr sliced_table = table->Slice(start_row, rows_in_group);
             row_tables.push_back(sliced_table);
 
@@ -790,6 +945,8 @@ void Partition::read_parquet(int table_name, std::string file_path)
             read_tables = combined;
         else
             read_tables = arrow::ConcatenateTables({read_tables, combined}).ValueOrDie();
+
+        // CkPrintf("Read file-%s\n", file.c_str());
     }
 
     arrow::Int32Builder builder;
@@ -808,9 +965,7 @@ void Partition::read_parquet(int table_name, std::string file_path)
         read_tables->num_rows()).ValueOrDie();
     tables[table_name] = set_column(read_tables, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()))->CombineChunks().ValueOrDie();
-
-    
-    //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
+    CkPrintf("Reading complete");
 }
 
 Aggregator::Aggregator(CProxy_Main main_proxy_)

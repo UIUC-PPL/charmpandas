@@ -37,7 +37,7 @@ partition.o: partition.cpp partition.decl.h partition.def.h reduction.decl.h red
 	$(CHARMC) `pkg-config --cflags --libs arrow` -module CommonLBs -c $< $(OPTS)
 
 server.out: partition.o server.o
-	$(CHARMC) -Wl,-rpath,/u/bhosale/.conda/envs/charmpandas/lib `pkg-config --cflags --libs arrow` -L$(XXHASH_DIR)/lib -g -lxxhash -lparquet -larrow_acero -language charm++ -module CommonLBs -o $@ partition.o server.o
+	$(CHARMC) -Wl,-rpath,/u/bhosale/.conda/envs/charmpandas/lib `pkg-config --cflags --libs arrow` -L$(XXHASH_DIR)/lib -g -lxxhash -lparquet -larrow_dataset -larrow_acero -language charm++ -module CommonLBs -o $@ partition.o server.o
 
 run-server: server.out
 	./charmrun +p4 ./server.out ++server ++server-port 10000
