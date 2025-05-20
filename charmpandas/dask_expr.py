@@ -5,7 +5,9 @@ from dask.dataframe.dask_expr._groupby import GroupBy
 from charmpandas.interface import LocalCluster, CCSInterface
 from functools import lru_cache
 import copy
-cluster = LocalCluster(min_pes=4,max_pes=4, odf=4,activity_timeout=60)
+
+# modify this
+cluster = LocalCluster(charmpandas_home='/mnt/c/Users/mohan/PPL/charmpandas', local_port=1239, min_pes=1, max_pes=1, odf=1,activity_timeout=60)
 pd.set_interface(cluster)
 def execute_dask(dask_obj, depth=0): # for now replaces dask read parquet with charmpandas read_parquet
     # print(simplified_expr)
