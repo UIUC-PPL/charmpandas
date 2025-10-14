@@ -345,13 +345,13 @@ void Partition::operation_fetch(char* cmd)
         auto table = clean_metadata(tables[table_name]);
         BufferPtr out;
         serialize(table, out);
-        msg = new (out->size()) GatherTableDataMsg(EPOCH, out->size(), num_partitions);
+        msg = new (out->size()) GatherTableDataMsg(EPOCH, out->size(), thisIndex, num_partitions);
         std::memcpy(msg->data, out->data(), out->size());
     }
     else
     {
         //CkPrintf("Table not found on chare %i\n", thisIndex);
-        msg = new (0) GatherTableDataMsg(EPOCH, 0, num_partitions);
+        msg = new (0) GatherTableDataMsg(EPOCH, 0, thisIndex, num_partitions);
     }
     agg_proxy[0].gather_table(msg);
     complete_operation();
@@ -632,7 +632,7 @@ void Partition::execute_command(int epoch, int size, char* cmd)
             operation_reduction(cmd);
             break;
         }
-    
+
         default:
             break;
     }
@@ -822,6 +822,8 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
         , expected_rows(0)
         , EPOCH(0)
         , next_temp_name(0)
+        , agg_samples_collected(0)
+        , sort_tables_collected(0)
 {
     if (MEM_LOGGING)
     {
@@ -895,10 +897,16 @@ void Aggregator::gather_table(GatherTableDataMsg* msg)
     //TablePtr table = deserialize(data, size);
     auto it = gather_count.find(msg->epoch);
     if (it == gather_count.end())
+    {
         gather_count[msg->epoch] = 1;
+        gather_buffer[msg->epoch].resize(msg->num_partitions);
+    }
     else
+    {
         gather_count[msg->epoch]++;
-    gather_buffer[msg->epoch].push_back(msg);
+    }
+
+    gather_buffer[msg->epoch][msg->chareIdx] = msg;
 
     if (gather_count[msg->epoch] == msg->num_partitions)
     {
@@ -1062,6 +1070,137 @@ void Aggregator::operation_join(char* cmd)
     start_join();
 }
 
+void Aggregator::operation_sort_values(char* cmd)
+{
+    int table_name = extract<int>(cmd);
+    int result_name = extract<int>(cmd);
+    int nkeys = extract<int>(cmd);
+    std::vector<std::string> keys;
+
+    for (int i = 0; i < nkeys; i++)
+    {
+        int key_size = extract<int>(cmd);
+        keys.push_back(std::string(cmd, key_size));
+        cmd += key_size;
+    }
+
+    bool ascending = extract<bool>(cmd);
+
+    std::vector<arrow::compute::SortKey> sort_keys;
+    for (const std::string& key : keys)
+    {
+        sort_keys.push_back(
+            arrow::compute::SortKey(
+                arrow::FieldRef(key),
+                ascending ? arrow::compute::SortOrder::Ascending : arrow::compute::SortOrder::Descending
+            )
+        );
+    }
+
+    sort_values_opts = new SortValuesOptions(table_name, result_name, sort_keys);
+
+    // Sort local data.
+    tables[table_name] = get_local_table(table_name);
+    auto indices_result = arrow::compute::SortIndices(arrow::Datum(tables[table_name]), arrow::compute::SortOptions(sort_keys)).ValueOrDie();
+    auto sorted_table = arrow::compute::Take(tables[table_name], indices_result).ValueOrDie().table(); 
+
+    // Get samples from sorted table.
+    auto column = sorted_table->GetColumnByName(keys[0]);
+    int num_samples = CkNumPes() - 1;
+    std::vector<int64_t> samples(num_samples);
+    for (int i = 0; i < num_samples; i++)
+    {
+        int index = (i + 1) * column->length() / CkNumPes();
+        int64_t sample = std::dynamic_pointer_cast<arrow::Int64Scalar>(column->GetScalar(index).ValueOrDie())->value;
+        samples[i] = sample;
+    }
+
+    thisProxy[0].collect_samples(num_samples, samples.data());
+}
+
+void Aggregator::collect_samples(int num_samples, int64_t samples[num_samples])
+{
+    CkAssert(CkMyPe() == 0);
+    
+    for (int i = 0; i < num_samples; i++)
+    {
+        all_samples.push_back(samples[i]);
+    }
+
+    if (++agg_samples_collected == CkNumPes())
+    {
+        // Sort samples to find splitters.
+        std::sort(all_samples.begin(), all_samples.end());
+
+        std::vector<int64_t> splitters(CkNumPes() - 1);
+        for (int i = 0; i < CkNumPes() - 1; i++)
+        {
+            splitters[i] = all_samples[(i + 1) * all_samples.size() / CkNumPes()];
+        }
+
+        // Send splitters to all aggregators.
+        thisProxy.receive_splitters(splitters.size(), splitters.data());
+    }
+}
+
+void Aggregator::receive_splitters(int num_splitters, int64_t splitters[num_splitters])
+{
+    assert(num_splitters == CkNumPes() - 1);
+
+    auto table = tables[sort_values_opts->table_name];
+
+    // For each PE, create a filter for the table based on the splitters.
+    for (int i = 0; i < CkNumPes(); i++) {
+        arrow::Expression mask;
+        arrow::Expression column_ref = arrow::compute::field_ref(sort_values_opts->sort_keys[0].target);
+        if (i == 0)
+            mask = arrow::compute::less(column_ref, arrow::compute::literal(splitters[0]));
+        else if (i == CkNumPes() - 1)
+            mask = arrow::compute::greater_equal(column_ref, arrow::compute::literal(splitters[i - 1]));
+        else
+            mask = arrow::compute::and_(
+                arrow::compute::greater_equal(column_ref, arrow::compute::literal(splitters[i - 1])),
+                arrow::compute::less(column_ref, arrow::compute::literal(splitters[i]))
+            );
+
+        arrow::acero::Declaration source{"table_source", arrow::acero::TableSourceNodeOptions{table}};
+        arrow::acero::Declaration filter{"filter", {source}, arrow::acero::FilterNodeOptions{mask}};
+        auto filtered_table = arrow::acero::DeclarationToTable(std::move(filter)).ValueOrDie();
+
+        BufferPtr out;
+        serialize(filtered_table, out);
+        SortTableMsg* msg = new (out->size()) SortTableMsg(EPOCH, out->size());
+        std::memcpy(msg->data, out->data(), out->size());
+
+        // If sorting descending order, send to the last PE first.
+        int receiver_idx = (sort_values_opts->sort_keys[0].order == arrow::compute::SortOrder::Descending)
+             ? (CkNumPes() - 1 - i)
+             : i;
+
+        thisProxy[index_to_send].receive_sort_tables(msg);
+    }
+}
+
+void Aggregator::receive_sort_tables(SortTableMsg* msg)
+{
+    // TODO: the received table data is stored in the message buffer and never freed.
+    auto received_table = deserialize(msg->data, msg->size);
+
+    auto it = tables.find(TEMP_TABLE_OFFSET + next_temp_name);
+    if (it == std::end(tables))
+        tables[TEMP_TABLE_OFFSET + next_temp_name] = received_table;
+    else
+        it->second = arrow::ConcatenateTables({it->second, received_table}).ValueOrDie();
+
+    if (++sort_tables_collected == CkNumPes())
+    {
+        auto indices_result = arrow::compute::SortIndices(arrow::Datum(tables[TEMP_TABLE_OFFSET + next_temp_name]), arrow::compute::SortOptions(sort_values_opts->sort_keys)).ValueOrDie();
+        tables[TEMP_TABLE_OFFSET + next_temp_name] = arrow::compute::Take(tables[TEMP_TABLE_OFFSET + next_temp_name], indices_result).ValueOrDie().table(); 
+        partition_table(tables[TEMP_TABLE_OFFSET + next_temp_name], sort_values_opts->result_name);
+        complete_sort_values();
+    }
+}
+
 void Aggregator::barrier_handler(int epoch)
 {
     CcsSendDelayedReply(fetch_reply[epoch], 0, NULL);
@@ -1096,6 +1235,12 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
         case Operation::GroupBy:
         {
             operation_groupby(cmd);
+            break;
+        }
+
+        case Operation::SortValues:
+        {
+            operation_sort_values(cmd);
             break;
         }
 
@@ -1449,6 +1594,12 @@ void Aggregator::receive_shuffle_data(RedistTableMsg* msg)
 
 void Aggregator::complete_operation()
 {
+    for (int i = 0; i < num_local_chares; i++)
+    {
+        int index = local_chares[i];
+        partition_proxy[index].ckLocal()->complete_operation();
+    }
+
     redist_table_names.clear();
     tables.clear();
     redist_tables.clear();
@@ -1467,12 +1618,6 @@ void Aggregator::complete_groupby()
     //EPOCH++;
     tables.erase(TEMP_TABLE_OFFSET + next_temp_name++);
 
-    for (int i = 0; i < num_local_chares; i++)
-    {
-        int index = local_chares[i];
-        partition_proxy[index].ckLocal()->complete_operation();
-    }
-
     complete_operation();
 }
 
@@ -1486,11 +1631,17 @@ void Aggregator::complete_join()
     join_opts = nullptr;
     //EPOCH++;
 
-    for (int i = 0; i < num_local_chares; i++)
-    {
-        int index = local_chares[i];
-        partition_proxy[index].ckLocal()->complete_operation();
-    }
+    complete_operation();
+}
+
+void Aggregator::complete_sort_values()
+{
+    tables.erase(sort_values_opts->table_name);
+    tables.erase(TEMP_TABLE_OFFSET + next_temp_name++);
+    delete sort_values_opts;
+    sort_values_opts = nullptr;
+    agg_samples_collected = 0;
+    sort_tables_collected = 0;
 
     complete_operation();
 }

@@ -110,11 +110,21 @@ public:
 class GatherTableDataMsg : public BaseTableDataMsg, public CMessage_GatherTableDataMsg
 {
 public:
+    int chareIdx;
     int num_partitions;
 
-    GatherTableDataMsg(int epoch_, int size_, int num_partitions_)
+    GatherTableDataMsg(int epoch_, int size_, int chareIdx_, int num_partitions_)
         : BaseTableDataMsg(epoch_, size_)
+        , chareIdx(chareIdx_)
         , num_partitions(num_partitions_)
+    {}
+};
+
+class SortTableMsg : public BaseTableDataMsg, public CMessage_SortTableMsg
+{
+public:
+    SortTableMsg(int epoch_, int size_)
+        : BaseTableDataMsg(epoch_, size_)
     {}
 };
 
