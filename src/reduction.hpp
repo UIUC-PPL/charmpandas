@@ -45,10 +45,10 @@ AggregateReductionMsg* create_reduction_msg(int result_name, int table_size, cha
     int total_size = sizeof(AggregateReductionMsg) + table_size + options_size;
     void* buffer = ::operator new(total_size);
     AggregateReductionMsg* msg = new (buffer) AggregateReductionMsg(result_name, table_size, options_size);
-    char* msg_options = reinterpret_cast<char*>(buffer + sizeof(AggregateReductionMsg));
+    char* msg_options = reinterpret_cast<char*>((char*)buffer + sizeof(AggregateReductionMsg));
     if (table_size > 0)
     {
-        char* msg_table = reinterpret_cast<char*>(buffer + sizeof(AggregateReductionMsg) + options_size);
+        char* msg_table = reinterpret_cast<char*>((char*)buffer + sizeof(AggregateReductionMsg) + options_size);
         std::memcpy(msg_table, table, table_size);
     }
     std::memcpy(msg_options, options, options_size);
