@@ -3,6 +3,8 @@
 #include <fstream>
 #include <filesystem>
 #include <regex>
+#include <filesystem>
+#include <regex>
 #include "utils.hpp"
 #include "operations.hpp"
 #include "messaging.hpp"
@@ -15,6 +17,7 @@
 #undef CK_TEMPLATES_ONLY
 #include "partition.def.h"
 
+#define MEM_LOGGING false
 #define MEM_LOGGING false
 #define MEM_LOG_DURATION 100
 
@@ -86,6 +89,14 @@ void Partition::reduce_scalar(ScalarPtr& scalar, AggregateOperation& op)
             break;
         }
 
+        case arrow::Type::TIMESTAMP:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::TimestampScalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_long), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
         case arrow::Type::FLOAT:
         {
             auto primitive_scalar = std::static_pointer_cast<arrow::FloatScalar>(scalar);
@@ -122,6 +133,7 @@ void Partition::reduction_result_float(float result)
 
 
 Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_)
+Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_)
     : num_partitions(num_partitions_)
     , agg_proxy(agg_proxy_)
     , EPOCH(0)
@@ -146,6 +158,7 @@ Partition::Partition(CkMigrateMessage* m)
     //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
     //thisProxy[thisIndex].poll();
 
+
 }
 
 Partition::~Partition()
@@ -169,7 +182,19 @@ void Partition::pup(PUP::er &p)
             agg_proxy.ckLocalBranch()->deregister_local_chare(thisIndex);
     }
     else if (p.isUnpacking())
+    /*if (p.isPacking())
     {
+        // deregister this chare with the aggregator
+        if (agg_proxy.ckLocalBranch() != NULL)
+            agg_proxy.ckLocalBranch()->deregister_local_chare(thisIndex);
+    }
+    else if (p.isUnpacking())
+    {
+        // Register local chares with the aggregator
+        agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
+        //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
+        //thisProxy[thisIndex].poll();
+    }*/
         // Register local chares with the aggregator
         agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
         //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
@@ -501,6 +526,7 @@ void Partition::operation_reduction(char* cmd)
         }
 
         case arrow::Type::INT64:
+        case arrow::Type::TIMESTAMP:
         {
             reduce_scalar<int64_t>(result, op);
             break;
@@ -555,6 +581,8 @@ void Partition::execute_command(int epoch, int size, char* cmd)
 {
     handle_deletions(cmd);
     Operation op = lookup_operation(extract<int>(cmd));
+
+    LBTurnInstrumentOn();
 
     switch (op)
     {
@@ -671,7 +699,14 @@ arrow::Datum Partition::extract_operand(char* &msg)
             ScalarPtr scalar = std::make_shared<arrow::DoubleScalar>(value);
             return arrow::Datum(scalar);
         }
-        
+
+        case OperandType::Timestamp:
+        {
+            int64_t value = extract<int64_t>(msg);
+            ScalarPtr scalar = std::make_shared<arrow::TimestampScalar>(value, arrow::timestamp(arrow::TimeUnit::NANO));
+            return arrow::Datum(scalar);
+        }
+
         default:
             return arrow::Datum();
     }
@@ -1173,6 +1208,14 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
                     double key = std::dynamic_pointer_cast<arrow::DoubleScalar>(
                         arr->GetScalar(i).ValueOrDie())->value;
                     XXH32_update(hash_state, &key, sizeof(double));
+                    break;
+                }
+
+                case arrow::Type::TIMESTAMP:
+                {
+                    int64_t key = std::dynamic_pointer_cast<arrow::TimestampScalar>(
+                        arr->GetScalar(i).ValueOrDie())->value;
+                    XXH32_update(hash_state, &key, sizeof(int64_t));
                     break;
                 }
 
