@@ -29,7 +29,8 @@ enum class Operation : int
     Skip = 9,
     FetchSize = 10,
     Barrier = 11,
-    Reduction = 12
+    Reduction = 12,
+    SortValues = 13
 };
 
 template<class T>
