@@ -1132,22 +1132,38 @@ void Aggregator::operation_sort_values(char* cmd)
         );
     }
 
-    sort_values_opts = new SortValuesOptions(table_name, result_name, sort_keys);
-
     // Sort local data.
     tables[table_name] = get_local_table(table_name);
     auto indices_result = arrow::compute::SortIndices(arrow::Datum(tables[table_name]), arrow::compute::SortOptions(sort_keys)).ValueOrDie();
-    auto sorted_table = arrow::compute::Take(tables[table_name], indices_result).ValueOrDie().table(); 
+    auto sorted_table = arrow::compute::Take(tables[table_name], indices_result).ValueOrDie().table();
 
     // Get samples from sorted table.
     auto column = sorted_table->GetColumnByName(keys[0]);
+    auto sort_column_type = column->type()->id();
+    sort_values_opts = new SortValuesOptions(table_name, result_name, sort_keys, sort_column_type);
+
     int num_samples = CkNumPes() - 1;
     std::vector<int64_t> samples(num_samples);
     for (int i = 0; i < num_samples; i++)
     {
         int index = (i + 1) * column->length() / CkNumPes();
-        int64_t sample = std::dynamic_pointer_cast<arrow::Int64Scalar>(column->GetScalar(index).ValueOrDie())->value;
-        samples[i] = sample;
+        switch (sort_column_type)
+        {
+            case arrow::Type::INT64:
+                samples[i] = std::dynamic_pointer_cast<arrow::Int64Scalar>(column->GetScalar(index).ValueOrDie())->value;
+                break;
+            case arrow::Type::TIMESTAMP:
+                samples[i] = std::dynamic_pointer_cast<arrow::TimestampScalar>(column->GetScalar(index).ValueOrDie())->value;
+                break;
+            case arrow::Type::INT32:
+                samples[i] = (int64_t) std::dynamic_pointer_cast<arrow::Int32Scalar>(column->GetScalar(index).ValueOrDie())->value;
+                break;
+            case arrow::Type::DOUBLE:
+                samples[i] = (int64_t) std::dynamic_pointer_cast<arrow::DoubleScalar>(column->GetScalar(index).ValueOrDie())->value;
+                break;
+            default:
+                CkAbort("Sort: unsupported column type for sample extraction");
+        }
     }
 
     thisProxy[0].collect_samples(num_samples, samples.data());
@@ -1184,18 +1200,30 @@ void Aggregator::receive_splitters(int num_splitters, int64_t splitters[num_spli
 
     auto table = tables[sort_values_opts->table_name];
 
+    // Create a typed literal from a splitter value based on the sort column type.
+    auto make_splitter_literal = [this](int64_t value) -> arrow::Expression {
+        switch (sort_values_opts->sort_column_type)
+        {
+            case arrow::Type::TIMESTAMP:
+                return arrow::compute::literal(
+                    std::make_shared<arrow::TimestampScalar>(value, arrow::timestamp(arrow::TimeUnit::NANO)));
+            default:
+                return arrow::compute::literal(value);
+        }
+    };
+
     // For each PE, create a filter for the table based on the splitters.
     for (int i = 0; i < CkNumPes(); i++) {
         arrow::Expression mask;
         arrow::Expression column_ref = arrow::compute::field_ref(sort_values_opts->sort_keys[0].target);
         if (i == 0)
-            mask = arrow::compute::less(column_ref, arrow::compute::literal(splitters[0]));
+            mask = arrow::compute::less(column_ref, make_splitter_literal(splitters[0]));
         else if (i == CkNumPes() - 1)
-            mask = arrow::compute::greater_equal(column_ref, arrow::compute::literal(splitters[i - 1]));
+            mask = arrow::compute::greater_equal(column_ref, make_splitter_literal(splitters[i - 1]));
         else
             mask = arrow::compute::and_(
-                arrow::compute::greater_equal(column_ref, arrow::compute::literal(splitters[i - 1])),
-                arrow::compute::less(column_ref, arrow::compute::literal(splitters[i]))
+                arrow::compute::greater_equal(column_ref, make_splitter_literal(splitters[i - 1])),
+                arrow::compute::less(column_ref, make_splitter_literal(splitters[i]))
             );
 
         arrow::acero::Declaration source{"table_source", arrow::acero::TableSourceNodeOptions{table}};

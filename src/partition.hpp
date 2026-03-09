@@ -63,11 +63,13 @@ public:
     int table_name;
     int result_name;
     std::vector<arrow::compute::SortKey> sort_keys;
+    arrow::Type::type sort_column_type;
 
-    SortValuesOptions(int table_name_, int result_name_, std::vector<arrow::compute::SortKey> sort_keys_)
+    SortValuesOptions(int table_name_, int result_name_, std::vector<arrow::compute::SortKey> sort_keys_, arrow::Type::type sort_column_type_)
         : table_name(table_name_)
         , result_name(result_name_)
         , sort_keys(sort_keys_)
+        , sort_column_type(sort_column_type_)
     {}
 };
 
