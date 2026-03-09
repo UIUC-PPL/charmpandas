@@ -40,6 +40,8 @@ def decode_type(type_code):
         return 'l'
     elif type_code == 11:
         return 'f'
+    elif type_code == 18:
+        return 'q'
 
 
 class Handlers(object):

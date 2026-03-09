@@ -86,6 +86,14 @@ void Partition::reduce_scalar(ScalarPtr& scalar, AggregateOperation& op)
             break;
         }
 
+        case arrow::Type::TIMESTAMP:
+        {
+            auto primitive_scalar = std::static_pointer_cast<arrow::TimestampScalar>(scalar);
+            CkCallback cb(CkReductionTarget(Partition, reduction_result_long), thisProxy[0]);
+            contribute(sizeof(T), (void*) &primitive_scalar->value, get_reduction_function(op, scalar->type->id()), cb);
+            break;
+        }
+
         case arrow::Type::FLOAT:
         {
             auto primitive_scalar = std::static_pointer_cast<arrow::FloatScalar>(scalar);
@@ -501,6 +509,7 @@ void Partition::operation_reduction(char* cmd)
         }
 
         case arrow::Type::INT64:
+        case arrow::Type::TIMESTAMP:
         {
             reduce_scalar<int64_t>(result, op);
             break;
@@ -555,6 +564,8 @@ void Partition::execute_command(int epoch, int size, char* cmd)
 {
     handle_deletions(cmd);
     Operation op = lookup_operation(extract<int>(cmd));
+
+    LBTurnInstrumentOn();
 
     switch (op)
     {
@@ -671,7 +682,14 @@ arrow::Datum Partition::extract_operand(char* &msg)
             ScalarPtr scalar = std::make_shared<arrow::DoubleScalar>(value);
             return arrow::Datum(scalar);
         }
-        
+
+        case OperandType::Timestamp:
+        {
+            int64_t value = extract<int64_t>(msg);
+            ScalarPtr scalar = std::make_shared<arrow::TimestampScalar>(value, arrow::timestamp(arrow::TimeUnit::NANO));
+            return arrow::Datum(scalar);
+        }
+
         default:
             return arrow::Datum();
     }
@@ -1173,6 +1191,14 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
                     double key = std::dynamic_pointer_cast<arrow::DoubleScalar>(
                         arr->GetScalar(i).ValueOrDie())->value;
                     XXH32_update(hash_state, &key, sizeof(double));
+                    break;
+                }
+
+                case arrow::Type::TIMESTAMP:
+                {
+                    int64_t key = std::dynamic_pointer_cast<arrow::TimestampScalar>(
+                        arr->GetScalar(i).ValueOrDie())->value;
+                    XXH32_update(hash_state, &key, sizeof(int64_t));
                     break;
                 }
 

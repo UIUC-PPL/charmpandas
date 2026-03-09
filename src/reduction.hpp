@@ -111,6 +111,10 @@ CkReduction::reducerType get_reduction_function(AggregateOperation& op, arrow::T
                 case arrow::Type::INT32:
                     return CkReduction::sum_int;
 
+                case arrow::Type::INT64:
+                case arrow::Type::TIMESTAMP:
+                    return CkReduction::sum_long;
+
                 case arrow::Type::FLOAT:
                     return CkReduction::sum_float;
 

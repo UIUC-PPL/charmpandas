@@ -26,7 +26,8 @@ enum class OperandType : int
 {
     Field = 0,
     Integer = 1,
-    Double = 2
+    Double = 2,
+    Timestamp = 3
 };
 
 std::string get_array_operation(ArrayOperation op)

@@ -1,3 +1,5 @@
+import datetime
+import numpy as np
 from charmpandas import dataframe
 from charmpandas.interface import to_bytes, string_bytes
 
@@ -6,6 +8,7 @@ class OperandTypes(object):
     field = 0
     integer = 1
     double = 2
+    timestamp = 3
 
 
 class ArrayOperations(object):
@@ -49,5 +52,12 @@ class FieldOperationNode(object):
                         OperandTypes.double, 'i'
                     )
                     self.identifier += to_bytes(op, 'd')
+                elif isinstance(op, (datetime.datetime, np.datetime64)):
+                    ts_value = int(np.datetime64(op, 'ns').astype(np.int64))
+                    self.identifier += to_bytes(ArrayOperations.noop, 'i')
+                    self.identifier += to_bytes(
+                        OperandTypes.timestamp, 'i'
+                    )
+                    self.identifier += to_bytes(ts_value, 'q')
                 else:
                     raise ValueError('unrecognized operation')
