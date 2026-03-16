@@ -2,11 +2,24 @@
 #include "converse.h"
 #include "conv-ccs.h"
 
+#ifdef USE_GPU
+#include <rmm/mr/device/pool_memory_resource.hpp>
+#include <rmm/mr/device/cuda_memory_resource.hpp>
+#include <rmm/mr/device/per_device_resource.hpp>
+#endif
+
 #include "server.decl.h"
 
 
-Main::Main(CkArgMsg* msg) 
+Main::Main(CkArgMsg* msg)
 {
+#ifdef USE_GPU
+    // Initialize RMM pool memory resource for GPU allocations
+    static auto cuda_mr = std::make_shared<rmm::mr::cuda_memory_resource>();
+    static auto pool_mr = std::make_shared<rmm::mr::pool_memory_resource<rmm::mr::cuda_memory_resource>>(cuda_mr.get());
+    rmm::mr::set_current_device_resource(pool_mr.get());
+#endif
+
     partition_ptr = &partition;
     register_handlers();
     agg_proxy = CProxy_Aggregator::ckNew(thisProxy);

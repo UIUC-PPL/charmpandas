@@ -1,4 +1,6 @@
+#ifndef USE_GPU
 #include <xxhash.h>
+#endif
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -26,6 +28,9 @@
 namespace fs = std::filesystem;
 
 
+#ifdef USE_GPU
+// GPU clean_metadata is defined in gpu_ops.hpp as gpu_clean_metadata()
+#else
 TablePtr clean_metadata(TablePtr &table)
 {
     std::vector<int> indices;
@@ -41,6 +46,7 @@ TablePtr clean_metadata(TablePtr &table)
     }
     return table->SelectColumns(indices).ValueOrDie();
 }
+#endif
 
 std::string get_parent_dir(const std::string& path_str) 
 {
@@ -64,8 +70,8 @@ std::vector<std::string> get_matching_files(std::string& path)
 
 
 template<typename T>
-void Partition::reduce_scalar(ScalarPtr& scalar, AggregateOperation& op) 
-{    
+void Partition::reduce_scalar(ScalarPtr& scalar, AggregateOperation& op)
+{
     // Null check
     if (!scalar->is_valid) {
         CkAbort("Scalar is null");
@@ -222,7 +228,6 @@ void Partition::pup_tables(PUP::er &p)
             if (it_serial == std::end(tables_serialized))
                 serialize_and_cache(table_name);
             serialized_size = tables_serialized[table_name]->size();
-            //CkPrintf("Serialized table %i with size %i\n", table_name, serialized_size);
             p | table_name;
             p | serialized_size;
             p((char*) tables_serialized[table_name]->data(), serialized_size);
@@ -235,12 +240,9 @@ void Partition::pup_tables(PUP::er &p)
         {
             p | table_name;
             p | serialized_size;
-            //CkPrintf("Deserialized table %i with size %i\n", table_name, serialized_size);
             char* buf = new char[serialized_size];
             p(buf, serialized_size);
             tables[table_name] = deserialize(buf, serialized_size);
-            // TODO: try to see what happens if I delete the buf
-            // Answer: Do not delete buf!
         }
     }
 }
@@ -257,15 +259,27 @@ int64_t Partition::calculate_memory_usage()
 
 int64_t Partition::calculate_memory_usage(TablePtr table)
 {
+#ifdef USE_GPU
+    // Estimate GPU memory: sum of column data sizes
+    int64_t total_size = 0;
+    for (int i = 0; i < table->num_columns(); ++i)
+    {
+        auto col = table->view().column(i);
+        total_size += col.size() * cudf::size_of(col.type());
+        if (col.null_mask())
+            total_size += cudf::bitmask_allocation_size_bytes(col.size());
+    }
+    return total_size;
+#else
     int64_t total_size = 0;
 
-    for (int i = 0; i < table->num_columns(); ++i) 
+    for (int i = 0; i < table->num_columns(); ++i)
     {
         auto column = table->column(i);
-        for (int j = 0; j < column->num_chunks(); ++j) 
+        for (int j = 0; j < column->num_chunks(); ++j)
         {
             auto chunk = column->chunk(j);
-            for (const auto& buffer : chunk->data()->buffers) 
+            for (const auto& buffer : chunk->data()->buffers)
             {
                 if (buffer)
                     total_size += buffer->size();
@@ -273,6 +287,7 @@ int64_t Partition::calculate_memory_usage(TablePtr table)
         }
     }
     return total_size;
+#endif
 }
 
 void Partition::serialize_and_cache(int table_name)
@@ -315,6 +330,12 @@ TablePtr Partition::get_table(int table_name)
 TablePtr Partition::get_table(int table_name, std::vector<std::string> fields)
 {
     TablePtr table = get_table(table_name);
+#ifdef USE_GPU
+    std::vector<int> indices;
+    for (int i = 0; i < fields.size(); i++)
+        indices.push_back(table->GetColumnIndex(fields[i]));
+    return table->SelectColumns(indices);
+#else
     std::vector<int> indices;
     for (int i = 0; i < fields.size(); i++)
     {
@@ -322,6 +343,7 @@ TablePtr Partition::get_table(int table_name, std::vector<std::string> fields)
         indices.push_back(col_index);
     }
     return table->SelectColumns(indices).ValueOrDie();
+#endif
 }
 
 inline void Partition::remove_table(int table_name)
@@ -331,6 +353,9 @@ inline void Partition::remove_table(int table_name)
 
 inline void Partition::add_table(int table_name, TablePtr table)
 {
+#ifdef USE_GPU
+    tables[table_name] = gpu_add_metadata(table, thisIndex);
+#else
     arrow::Int32Builder builder;
     builder.Reserve(table->num_rows());
 
@@ -347,6 +372,7 @@ inline void Partition::add_table(int table_name, TablePtr table)
         table->num_rows()).ValueOrDie();
     tables[table_name] = set_column(table, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()));
+#endif
 }
 
 void Partition::operation_read(char* cmd)
@@ -367,7 +393,11 @@ void Partition::operation_fetch(char* cmd)
     GatherTableDataMsg* msg;
     if (it != std::end(tables))
     {
+#ifdef USE_GPU
+        auto table = gpu_clean_metadata(tables[table_name]);
+#else
         auto table = clean_metadata(tables[table_name]);
+#endif
         BufferPtr out;
         serialize(table, out);
         msg = new (out->size()) GatherTableDataMsg(EPOCH, out->size(), thisIndex, num_partitions);
@@ -375,7 +405,6 @@ void Partition::operation_fetch(char* cmd)
     }
     else
     {
-        //CkPrintf("Table not found on chare %i\n", thisIndex);
         msg = new (0) GatherTableDataMsg(EPOCH, 0, thisIndex, num_partitions);
     }
     agg_proxy[0].gather_table(msg);
@@ -391,11 +420,15 @@ void Partition::operation_print(char* cmd)
         std::stringstream ss;
         if (it != std::end(tables))
         {
+#ifdef USE_GPU
+            // Convert to Arrow for printing (debug path, ok to be slow)
+            auto arrow_table = it->second->to_arrow();
+            arrow::PrettyPrint(*arrow_table, {}, &ss);
+#else
             arrow::PrettyPrint(*it->second, {}, &ss);
+#endif
             CkPrintf("[%d] Table: %i\n%s\n", thisIndex, table_name, ss.str().c_str());
-            //CkPrintf("[%d] Table: %i: %i\n", thisIndex, table_name, it->second->num_rows());
         }
-            //CkPrintf("[%d]\n%s\n", thisIndex, it->second->ToString().c_str());
         else
             CkPrintf("[%d] Table not on this partition\n", thisIndex);
     }
@@ -417,7 +450,13 @@ void Partition::operation_concat(char* cmd)
 
     int result = extract<int>(cmd);
     if (concat_tables.size() > 0)
+    {
+#ifdef USE_GPU
+        tables[result] = gpu_concatenate(concat_tables);
+#else
         tables[result] = arrow::ConcatenateTables(concat_tables).ValueOrDie();
+#endif
+    }
 
     complete_operation();
 }
@@ -469,8 +508,13 @@ void Partition::operation_set_column(char* cmd)
     {
         std::string field_name(cmd, field_size);
         cmd += field_size;
+#ifdef USE_GPU
+        GpuDatum result = traverse_ast(cmd);
+        tables[table_name] = it->second->SetColumn(field_name, std::move(result.col));
+#else
         arrow::Datum result = traverse_ast(cmd);
         tables[table_name] = set_column(it->second, field_name, result);
+#endif
     }
     complete_operation();
 }
@@ -482,8 +526,13 @@ void Partition::operation_filter(char* cmd)
     auto it = tables.find(table_name);
     if (it != std::end(tables))
     {
+#ifdef USE_GPU
+        GpuDatum condition = traverse_ast(cmd);
+        tables[result_table] = gpu_filter(it->second, condition.col->view());
+#else
         arrow::Datum condition = traverse_ast(cmd);
         tables[result_table] = arrow::compute::Filter(it->second, condition).ValueOrDie().table();
+#endif
     }
     complete_operation();
 }
@@ -514,9 +563,42 @@ void Partition::operation_reduction(char* cmd)
     cmd += col_size;
     AggregateOperation op = static_cast<AggregateOperation>(extract<int>(cmd));
     TablePtr table = get_table(table_name);
-    //CkPrintf("[%i] Size = %i, col = %s, op = %i\n", thisIndex, table->num_rows(), col_name.c_str(), op);
+
+#ifdef USE_GPU
+    // GPU reduction: cudf::reduce on device column, extract scalar to host for Charm++ contribute
+    cudf::column_view col = table->GetColumnByName(col_name);
+    auto gpu_scalar = gpu_reduce(col, op);
+
+    // Extract scalar value to host and contribute via Charm++ reduction
+    auto col_type = col.type().id();
+    if (col_type == cudf::type_id::INT32)
+    {
+        auto val = static_cast<cudf::numeric_scalar<int32_t>*>(gpu_scalar.get())->value();
+        ScalarPtr arrow_scalar = std::make_shared<arrow::Int32Scalar>(val);
+        reduce_scalar<int>(arrow_scalar, op);
+    }
+    else if (col_type == cudf::type_id::INT64 ||
+             col_type == cudf::type_id::TIMESTAMP_NANOSECONDS)
+    {
+        auto val = static_cast<cudf::numeric_scalar<int64_t>*>(gpu_scalar.get())->value();
+        ScalarPtr arrow_scalar = std::make_shared<arrow::Int64Scalar>(val);
+        reduce_scalar<int64_t>(arrow_scalar, op);
+    }
+    else if (col_type == cudf::type_id::FLOAT32)
+    {
+        auto val = static_cast<cudf::numeric_scalar<float>*>(gpu_scalar.get())->value();
+        ScalarPtr arrow_scalar = std::make_shared<arrow::FloatScalar>(val);
+        reduce_scalar<float>(arrow_scalar, op);
+    }
+    else if (col_type == cudf::type_id::FLOAT64)
+    {
+        auto val = static_cast<cudf::numeric_scalar<double>*>(gpu_scalar.get())->value();
+        ScalarPtr arrow_scalar = std::make_shared<arrow::DoubleScalar>(val);
+        reduce_scalar<double>(arrow_scalar, op);
+    }
+#else
     ScalarPtr result = local_reduction(table, col_name, op);
-    
+
     switch (result->type->id())
     {
         case arrow::Type::INT32:
@@ -544,11 +626,12 @@ void Partition::operation_reduction(char* cmd)
             break;
         }
     }
-    
-    //reduce_scalar(result, op, agg_proxy);
+#endif
+
     complete_operation();
 }
 
+#ifndef USE_GPU
 ScalarPtr Partition::local_reduction(TablePtr &table, std::string &col_name, AggregateOperation &op)
 {
     std::string oper = get_compute_function(op);
@@ -556,6 +639,7 @@ ScalarPtr Partition::local_reduction(TablePtr &table, std::string &col_name, Agg
     arrow::Datum result = arrow::compute::CallFunction(oper, {col_array}).ValueOrDie();
     return result.scalar();
 }
+#endif
 
 void Partition::aggregate_result(CkReductionMsg* msg)
 {
@@ -668,6 +752,93 @@ void Partition::execute_command(int epoch, int size, char* cmd)
     //CkPrintf("Chare %i> Memory usage = %f MB\n", thisIndex, ((double) calculate_memory_usage()) / (1024 * 1024));
 }
 
+#ifdef USE_GPU
+
+GpuDatum Partition::extract_operand(char* &msg)
+{
+    OperandType operand_type = static_cast<OperandType>(extract<int>(msg));
+
+    switch (operand_type)
+    {
+        case OperandType::Field:
+        {
+            int table_name = extract<int>(msg);
+            int field_size = extract<int>(msg);
+            std::string field_name(msg, field_size);
+            msg += field_size;
+            auto it = tables.find(table_name);
+            if (it == std::end(tables))
+                CkAbort("Table not found\n");
+            // Copy column view into an owning column
+            cudf::column_view col_view = it->second->GetColumnByName(field_name);
+            auto col = std::make_unique<cudf::column>(col_view);
+            return GpuDatum::from_column(std::move(col));
+        }
+
+        case OperandType::Integer:
+        {
+            int value = extract<int>(msg);
+            auto scalar = cudf::make_fixed_width_scalar<int64_t>(static_cast<int64_t>(value));
+            scalar->set_valid_async(true);
+            return GpuDatum::from_scalar(std::move(scalar));
+        }
+
+        case OperandType::Double:
+        {
+            double value = extract<double>(msg);
+            auto scalar = cudf::make_fixed_width_scalar<double>(value);
+            scalar->set_valid_async(true);
+            return GpuDatum::from_scalar(std::move(scalar));
+        }
+
+        case OperandType::Timestamp:
+        {
+            int64_t value = extract<int64_t>(msg);
+            auto scalar = cudf::make_timestamp_scalar<cudf::timestamp_ns>(value);
+            scalar->set_valid_async(true);
+            return GpuDatum::from_scalar(std::move(scalar));
+        }
+
+        default:
+            return GpuDatum();
+    }
+}
+
+GpuDatum Partition::traverse_ast(char* &msg)
+{
+    ArrayOperation opcode = static_cast<ArrayOperation>(extract<int>(msg));
+
+    switch (opcode)
+    {
+        case ArrayOperation::Noop:
+        {
+            return extract_operand(msg);
+        }
+
+        case ArrayOperation::Add:
+        case ArrayOperation::Sub:
+        case ArrayOperation::Multiply:
+        case ArrayOperation::Divide:
+        case ArrayOperation::LessThan:
+        case ArrayOperation::LessEqual:
+        case ArrayOperation::GreaterThan:
+        case ArrayOperation::GreaterEqual:
+        case ArrayOperation::Equal:
+        case ArrayOperation::NotEqual:
+        {
+            GpuDatum lhs = traverse_ast(msg);
+            GpuDatum rhs = traverse_ast(msg);
+            auto result_col = execute_operation_gpu(lhs, rhs, opcode);
+            return GpuDatum::from_column(std::move(result_col));
+        }
+
+        default:
+            return GpuDatum();
+    }
+}
+
+#else // !USE_GPU
+
 arrow::Datum Partition::extract_operand(char* &msg)
 {
     OperandType operand_type = static_cast<OperandType>(extract<int>(msg));
@@ -739,14 +910,61 @@ arrow::Datum Partition::traverse_ast(char* &msg)
             operands.push_back(traverse_ast(msg));
             return execute_operation(opcode, operands);
         }
-        
+
         default:
             return arrow::Datum();
     }
 }
 
+#endif // USE_GPU
+
 void Partition::read_parquet(int table_name, std::string file_path)
 {
+#ifdef USE_GPU
+    // GPU path: read parquet directly to GPU memory via cudf
+    std::vector<std::string> files = get_matching_files(file_path);
+
+    if (thisIndex == 0)
+        CkPrintf("[%d] Reading %lu files (GPU)\n", thisIndex, files.size());
+
+    TablePtr read_tables = nullptr;
+
+    for (int i = 0; i < files.size(); i++)
+    {
+        std::string file = files[i];
+
+        // Get row count from parquet metadata to compute partition range
+        int64_t num_rows = gpu_parquet_num_rows(file);
+        int64_t nrows_per_partition = num_rows / num_partitions;
+        int64_t start_row = nrows_per_partition * thisIndex;
+        int64_t nextra_rows = num_rows - num_partitions * nrows_per_partition;
+
+        if (thisIndex < nextra_rows)
+        {
+            start_row += thisIndex;
+            nrows_per_partition++;
+        }
+        else
+        {
+            start_row += nextra_rows;
+        }
+
+        auto file_table = gpu_read_parquet(file, start_row, nrows_per_partition);
+
+        if (read_tables == nullptr)
+            read_tables = file_table;
+        else
+        {
+            std::vector<TablePtr> to_concat = {read_tables, file_table};
+            read_tables = gpu_concatenate(to_concat);
+        }
+    }
+
+    // Add metadata columns and store
+    tables[table_name] = gpu_add_metadata(read_tables, thisIndex);
+
+#else
+    // CPU path: read parquet via Arrow
     std::vector<std::string> files = get_matching_files(file_path);
     std::shared_ptr<arrow::io::ReadableFile> input_file;
     TablePtr read_tables = nullptr;
@@ -844,8 +1062,8 @@ void Partition::read_parquet(int table_name, std::string file_path)
     tables[table_name] = set_column(read_tables, "home_partition", arrow::Datum(
         arrow::ChunkedArray::Make({home_partition_array}).ValueOrDie()))->CombineChunks().ValueOrDie();
 
-    
     //CkPrintf("[%d] Read number of rows = %i\n", thisIndex, combined->num_rows());
+#endif // !USE_GPU (closing the #else from GPU read_parquet path)
 }
 
 Aggregator::Aggregator(CProxy_Main main_proxy_)
@@ -953,9 +1171,12 @@ void Aggregator::gather_table(GatherTableDataMsg* msg)
                 continue;
             gathered_tables.push_back(deserialize(buff_msg->data, buff_msg->size));
         }
-        //CkPrintf("Received all pieces, size = %i\n", gathered_tables.size());
         // table is gathered, send to server and reply ccs
+#ifdef USE_GPU
+        auto combined_table = gpu_concatenate(gathered_tables);
+#else
         auto combined_table = arrow::ConcatenateTables(gathered_tables).ValueOrDie();
+#endif
         CkPrintf("Gathered table data in aggregator with size = %i\n", combined_table->num_rows());
         BufferPtr out;
         serialize(combined_table, out);
@@ -1032,7 +1253,14 @@ TablePtr Aggregator::get_local_table(int table_name)
             if (local_table == nullptr)
                 local_table = part_table;
             else
+            {
+#ifdef USE_GPU
+                std::vector<TablePtr> to_concat = {local_table, part_table};
+                local_table = gpu_concatenate(to_concat);
+#else
                 local_table = arrow::ConcatenateTables({local_table, part_table}).ValueOrDie();
+#endif
+            }
         }
     }
 
@@ -1047,6 +1275,44 @@ void Aggregator::operation_groupby(char* cmd)
     char* options = cmd;
     arrow::acero::AggregateNodeOptions* agg_opts = extract_aggregate_options(cmd, true);
 
+#ifdef USE_GPU
+    // Extract key names and aggregation info for GPU
+    std::vector<std::string> key_names;
+    for (auto const& key : agg_opts->keys)
+        key_names.push_back(*key.name());
+
+    std::vector<std::pair<AggregateOperation, std::string>> aggregations;
+    std::vector<std::string> result_col_names;
+    for (auto const& agg : agg_opts->aggregates)
+    {
+        // Map hash_* function names back to AggregateOperation enum
+        AggregateOperation agg_op = AggregateOperation::Sum;
+        if (agg.function == "hash_sum") agg_op = AggregateOperation::Sum;
+        else if (agg.function == "hash_count") agg_op = AggregateOperation::Count;
+        else if (agg.function == "hash_all") agg_op = AggregateOperation::All;
+        else if (agg.function == "hash_any") agg_op = AggregateOperation::Any;
+
+        std::string target_col;
+        if (!agg.target.empty())
+            target_col = *agg.target[0].name();
+        aggregations.push_back({agg_op, target_col});
+        result_col_names.push_back(agg.name);
+    }
+
+    groupby_opts = new GroupByOptions(table_name, result_name,
+        key_names, aggregations, result_col_names);
+
+    TablePtr local_table = get_local_table(table_name);
+    tables[table_name] = local_table;
+    tables[TEMP_TABLE_OFFSET + next_temp_name] = local_table;
+
+    // GPU groupby uses cudf::groupby — two-level aggregation handled in callback
+    auto redist_keys = std::vector<std::vector<std::string>>{key_names};
+    auto table_names_vec = std::vector<int>{TEMP_TABLE_OFFSET + next_temp_name};
+    redistribute(table_names_vec, redist_keys, RedistOperation::GroupBy);
+
+    delete agg_opts;
+#else
     groupby_opts = new GroupByOptions(table_name, result_name, agg_opts);
 
     TablePtr local_table = get_local_table(table_name);
@@ -1061,8 +1327,9 @@ void Aggregator::operation_groupby(char* cmd)
 
     tables[TEMP_TABLE_OFFSET + next_temp_name] = result;
     auto redist_keys = std::vector<std::vector<arrow::FieldRef>>{agg_opts->keys};
-    auto table_names = std::vector<int>{TEMP_TABLE_OFFSET + next_temp_name};
-    redistribute(table_names, redist_keys, RedistOperation::GroupBy);
+    auto table_names_vec = std::vector<int>{TEMP_TABLE_OFFSET + next_temp_name};
+    redistribute(table_names_vec, redist_keys, RedistOperation::GroupBy);
+#endif
 }
 
 void Aggregator::operation_join(char* cmd)
@@ -1072,35 +1339,42 @@ void Aggregator::operation_join(char* cmd)
     int result_name = extract<int>(cmd);
     int nkeys = extract<int>(cmd);
 
+    std::vector<std::string> left_key_names, right_key_names;
+#ifndef USE_GPU
     std::vector<arrow::FieldRef> left_keys, right_keys;
-    std::vector<int> lkey_sizes, rkey_sizes;
-    int total_lsize = 0, total_rsize = 0;
+#endif
+
     for (int i = 0; i < nkeys; i++)
     {
         int lkey_size = extract<int>(cmd);
-        left_keys.push_back(arrow::FieldRef(std::string(cmd, lkey_size)));
-        lkey_sizes.push_back(lkey_size);
+        std::string lkey_name(cmd, lkey_size);
+        left_key_names.push_back(lkey_name);
+#ifndef USE_GPU
+        left_keys.push_back(arrow::FieldRef(lkey_name));
+#endif
         cmd += lkey_size;
-        total_lsize += lkey_size;
 
         int rkey_size = extract<int>(cmd);
-        right_keys.push_back(arrow::FieldRef(std::string(cmd, rkey_size)));
-        rkey_sizes.push_back(rkey_size);
+        std::string rkey_name(cmd, rkey_size);
+        right_key_names.push_back(rkey_name);
+#ifndef USE_GPU
+        right_keys.push_back(arrow::FieldRef(rkey_name));
+#endif
         cmd += rkey_size;
-        total_rsize += rkey_size;
     }
-
-    //CkPrintf("%s, %s\n", left_keys[0].name()->c_str(), left_keys[1].name()->c_str());
-    //CkPrintf("%s, %s\n", right_keys[0].name()->c_str(), right_keys[1].name()->c_str());
 
     arrow::acero::JoinType type = static_cast<arrow::acero::JoinType>(extract<int>(cmd));
 
-    // only join locally if both tables are in the chare
+#ifdef USE_GPU
+    join_opts = new JoinOptions(table1, table2, result_name,
+        left_key_names, right_key_names, type);
+#else
     arrow::acero::HashJoinNodeOptions* opts = new arrow::acero::HashJoinNodeOptions(
         type, left_keys, right_keys, arrow::compute::literal(true),
         "_l", "_r"
     );
     join_opts = new JoinOptions(table1, table2, result_name, opts);
+#endif
 
     start_join();
 }
@@ -1121,6 +1395,52 @@ void Aggregator::operation_sort_values(char* cmd)
 
     bool ascending = extract<bool>(cmd);
 
+#ifdef USE_GPU
+    // Sort local data on GPU
+    tables[table_name] = get_local_table(table_name);
+
+    std::vector<std::string> sort_key_names;
+    std::vector<cudf::order> sort_orders;
+    for (const std::string& key : keys)
+    {
+        sort_key_names.push_back(key);
+        sort_orders.push_back(ascending ? cudf::order::ASCENDING : cudf::order::DESCENDING);
+    }
+
+    tables[table_name] = gpu_sort(tables[table_name], sort_key_names, sort_orders);
+    sort_values_opts = new SortValuesOptions(table_name, result_name, sort_key_names, sort_orders);
+
+    // Extract samples by converting sort column to Arrow (small D2H copy for splitter values)
+    auto arrow_table = tables[table_name]->to_arrow();
+    auto column = arrow_table->GetColumnByName(keys[0]);
+    int num_samples = CkNumPes() - 1;
+    std::vector<int64_t> samples(num_samples);
+    for (int i = 0; i < num_samples; i++)
+    {
+        int index = (i + 1) * column->length() / CkNumPes();
+        auto scalar = column->GetScalar(index).ValueOrDie();
+        switch (scalar->type->id())
+        {
+            case arrow::Type::INT64:
+                samples[i] = std::dynamic_pointer_cast<arrow::Int64Scalar>(scalar)->value;
+                break;
+            case arrow::Type::TIMESTAMP:
+                samples[i] = std::dynamic_pointer_cast<arrow::TimestampScalar>(scalar)->value;
+                break;
+            case arrow::Type::INT32:
+                samples[i] = (int64_t) std::dynamic_pointer_cast<arrow::Int32Scalar>(scalar)->value;
+                break;
+            case arrow::Type::DOUBLE:
+                samples[i] = (int64_t) std::dynamic_pointer_cast<arrow::DoubleScalar>(scalar)->value;
+                break;
+            default:
+                CkAbort("Sort: unsupported column type for sample extraction");
+        }
+    }
+
+    thisProxy[0].collect_samples(num_samples, samples.data());
+
+#else
     std::vector<arrow::compute::SortKey> sort_keys;
     for (const std::string& key : keys)
     {
@@ -1167,6 +1487,7 @@ void Aggregator::operation_sort_values(char* cmd)
     }
 
     thisProxy[0].collect_samples(num_samples, samples.data());
+#endif
 }
 
 void Aggregator::collect_samples(int num_samples, int64_t samples[num_samples])
@@ -1200,6 +1521,56 @@ void Aggregator::receive_splitters(int num_splitters, int64_t splitters[num_spli
 
     auto table = tables[sort_values_opts->table_name];
 
+#ifdef USE_GPU
+    // GPU: build boolean masks on device for range partitioning
+    std::string sort_key = sort_values_opts->sort_key_names[0];
+    bool descending = (sort_values_opts->sort_orders[0] == cudf::order::DESCENDING);
+
+    for (int i = 0; i < CkNumPes(); i++)
+    {
+        cudf::column_view sort_col = table->GetColumnByName(sort_key);
+        std::unique_ptr<cudf::column> mask;
+
+        if (i == 0)
+        {
+            auto splitter_scalar = cudf::make_fixed_width_scalar<int64_t>(splitters[0]);
+            splitter_scalar->set_valid_async(true);
+            mask = cudf::binary_operation(sort_col, *splitter_scalar,
+                cudf::binary_operator::LESS, cudf::data_type{cudf::type_id::BOOL8});
+        }
+        else if (i == CkNumPes() - 1)
+        {
+            auto splitter_scalar = cudf::make_fixed_width_scalar<int64_t>(splitters[i - 1]);
+            splitter_scalar->set_valid_async(true);
+            mask = cudf::binary_operation(sort_col, *splitter_scalar,
+                cudf::binary_operator::GREATER_EQUAL, cudf::data_type{cudf::type_id::BOOL8});
+        }
+        else
+        {
+            auto lo_scalar = cudf::make_fixed_width_scalar<int64_t>(splitters[i - 1]);
+            lo_scalar->set_valid_async(true);
+            auto hi_scalar = cudf::make_fixed_width_scalar<int64_t>(splitters[i]);
+            hi_scalar->set_valid_async(true);
+            auto ge_mask = cudf::binary_operation(sort_col, *lo_scalar,
+                cudf::binary_operator::GREATER_EQUAL, cudf::data_type{cudf::type_id::BOOL8});
+            auto lt_mask = cudf::binary_operation(sort_col, *hi_scalar,
+                cudf::binary_operator::LESS, cudf::data_type{cudf::type_id::BOOL8});
+            mask = cudf::binary_operation(ge_mask->view(), lt_mask->view(),
+                cudf::binary_operator::BITWISE_AND, cudf::data_type{cudf::type_id::BOOL8});
+        }
+
+        auto filtered_table = gpu_filter(table, mask->view());
+
+        BufferPtr out;
+        serialize(filtered_table, out);
+        SortTableMsg* msg = new (out->size()) SortTableMsg(EPOCH, out->size());
+        std::memcpy(msg->data, out->data(), out->size());
+
+        int receiver_idx = descending ? (CkNumPes() - 1 - i) : i;
+        thisProxy[receiver_idx].receive_sort_tables(msg);
+    }
+
+#else
     // Create a typed literal from a splitter value based on the sort column type.
     auto make_splitter_literal = [this](int64_t value) -> arrow::Expression {
         switch (sort_values_opts->sort_column_type)
@@ -1240,25 +1611,38 @@ void Aggregator::receive_splitters(int num_splitters, int64_t splitters[num_spli
              ? (CkNumPes() - 1 - i)
              : i;
 
-        thisProxy[index_to_send].receive_sort_tables(msg);
+        thisProxy[receiver_idx].receive_sort_tables(msg);
     }
+#endif
 }
 
 void Aggregator::receive_sort_tables(SortTableMsg* msg)
 {
-    // TODO: the received table data is stored in the message buffer and never freed.
     auto received_table = deserialize(msg->data, msg->size);
 
     auto it = tables.find(TEMP_TABLE_OFFSET + next_temp_name);
     if (it == std::end(tables))
         tables[TEMP_TABLE_OFFSET + next_temp_name] = received_table;
     else
+    {
+#ifdef USE_GPU
+        std::vector<TablePtr> to_concat = {it->second, received_table};
+        it->second = gpu_concatenate(to_concat);
+#else
         it->second = arrow::ConcatenateTables({it->second, received_table}).ValueOrDie();
+#endif
+    }
 
     if (++sort_tables_collected == CkNumPes())
     {
+#ifdef USE_GPU
+        tables[TEMP_TABLE_OFFSET + next_temp_name] = gpu_sort(
+            tables[TEMP_TABLE_OFFSET + next_temp_name],
+            sort_values_opts->sort_key_names, sort_values_opts->sort_orders);
+#else
         auto indices_result = arrow::compute::SortIndices(arrow::Datum(tables[TEMP_TABLE_OFFSET + next_temp_name]), arrow::compute::SortOptions(sort_values_opts->sort_keys)).ValueOrDie();
-        tables[TEMP_TABLE_OFFSET + next_temp_name] = arrow::compute::Take(tables[TEMP_TABLE_OFFSET + next_temp_name], indices_result).ValueOrDie().table(); 
+        tables[TEMP_TABLE_OFFSET + next_temp_name] = arrow::compute::Take(tables[TEMP_TABLE_OFFSET + next_temp_name], indices_result).ValueOrDie().table();
+#endif
         partition_table(tables[TEMP_TABLE_OFFSET + next_temp_name], sort_values_opts->result_name);
         complete_sort_values();
     }
@@ -1312,6 +1696,67 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
     }
 }
 
+#ifdef USE_GPU
+
+void Aggregator::update_histogram(TablePtr table, std::vector<int> &hist)
+{
+    // GPU: gather hash column to host for histogram computation
+    cudf::column_view key_col = table->GetColumnByName("_mapped_key");
+    auto arrow_table = table->to_arrow();
+    auto key_array = arrow_table->GetColumnByName("_mapped_key");
+    for (int i = 0; i < key_array->length(); i++)
+    {
+        uint32_t key = std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(i).ValueOrDie())->value;
+        hist[key]++;
+    }
+}
+
+TablePtr Aggregator::map_keys(TablePtr &table, std::vector<std::string> &fields)
+{
+    // GPU: use cudf::hashing::murmurhash3 for column-level hashing
+    std::vector<cudf::column_view> key_views;
+    for (auto const& field : fields)
+        key_views.push_back(table->GetColumnByName(field));
+
+    cudf::table_view key_table(key_views);
+    auto hash_col = cudf::hashing::murmurhash3_x86_32(key_table);
+
+    // Apply modulo to map to buckets: hash % (redist_odf * CkNumPes())
+    int32_t num_buckets = redist_odf * CkNumPes();
+    auto mod_scalar = cudf::make_fixed_width_scalar<int32_t>(num_buckets);
+    mod_scalar->set_valid_async(true);
+    auto mapped_col = cudf::binary_operation(
+        hash_col->view(), *mod_scalar,
+        cudf::binary_operator::PYMOD,
+        cudf::data_type{cudf::type_id::UINT32});
+
+    return table->SetColumn("_mapped_key", std::move(mapped_col));
+}
+
+void Aggregator::redistribute(std::vector<int> table_names, std::vector<std::vector<std::string>> &keys,
+    RedistOperation oper)
+{
+    redist_table_names = table_names;
+    redist_operation = oper;
+    for (int i = 0; i < table_names.size(); i++)
+    {
+        if (tables[table_names[i]] != nullptr && tables[table_names[i]]->num_rows() > 0)
+            tables[table_names[i]] = map_keys(tables[table_names[i]], keys[i]);
+    }
+
+    std::vector<int> local_hist(redist_odf * CkNumPes(), 0);
+    for (int i = 0; i < table_names.size(); i++)
+    {
+        if (tables[table_names[i]] != nullptr)
+            update_histogram(tables[table_names[i]], local_hist);
+    }
+
+    CkCallback cb(CkReductionTarget(Aggregator, assign_keys), thisProxy[0]);
+    contribute(redist_odf * CkNumPes() * sizeof(int), local_hist.data(), CkReduction::sum_int, cb);
+}
+
+#else // !USE_GPU
+
 void Aggregator::update_histogram(TablePtr table, std::vector<int> &hist)
 {
     ChunkedArrayPtr key_array = table->GetColumnByName("_mapped_key");
@@ -1364,7 +1809,7 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
                 {
                     int64_t key = std::dynamic_pointer_cast<arrow::Int64Scalar>(
                         arr->GetScalar(i).ValueOrDie())->value;
-                    XXH32_update(hash_state, &key, sizeof(int64_t));   
+                    XXH32_update(hash_state, &key, sizeof(int64_t));
                     break;
                 }
 
@@ -1408,17 +1853,25 @@ TablePtr Aggregator::map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fie
     return set_column(table, "_mapped_key", arrow::Datum(arrow::ChunkedArray::Make({hash_array}).ValueOrDie()));
 }
 
+#endif // USE_GPU
+
 void Aggregator::start_join()
 {
     tables[join_opts->table1] = get_local_table(join_opts->table1);
     tables[join_opts->table2] = get_local_table(join_opts->table2);
 
+#ifdef USE_GPU
+    auto redist_keys = std::vector<std::vector<std::string>>{
+        join_opts->left_keys, join_opts->right_keys};
+#else
     auto redist_keys = std::vector<std::vector<arrow::FieldRef>>{
         join_opts->opts->left_keys, join_opts->opts->right_keys};
-    redistribute({join_opts->table1, join_opts->table2}, 
+#endif
+    redistribute({join_opts->table1, join_opts->table2},
         redist_keys, RedistOperation::Join);
 }
 
+#ifndef USE_GPU
 void Aggregator::redistribute(std::vector<int> table_names, std::vector<std::vector<arrow::FieldRef>> &keys,
     RedistOperation oper)
 {
@@ -1440,6 +1893,7 @@ void Aggregator::redistribute(std::vector<int> table_names, std::vector<std::vec
     CkCallback cb(CkReductionTarget(Aggregator, assign_keys), thisProxy[0]);
     contribute(redist_odf * CkNumPes() * sizeof(int), local_hist.data(), CkReduction::sum_int, cb);
 }
+#endif // !USE_GPU
 
 void Aggregator::assign_keys(int num_elements, int* global_hist)
 {
@@ -1483,8 +1937,6 @@ void Aggregator::assign_keys(int num_elements, int* global_hist)
 
 void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected_loads)
 {
-    // result of bcast goes here
-    // shuffle data based on data mapping
     expected_rows = expected_loads[CkMyPe()];
 
     std::vector<BufferPtr> serialized_buffers[CkNumPes()];
@@ -1496,30 +1948,58 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
     {
         int table_name = redist_table_names[i];
         TablePtr table = tables[table_name];
-        std::vector<int> indices[CkNumPes()];
+        std::vector<std::vector<int>> indices(CkNumPes());
 
-        //CkPrintf("%i: %s\n", table_name, table->schema()->ToString().c_str());
-        ChunkedArrayPtr key_array = table->GetColumnByName("_mapped_key");
-
+#ifdef USE_GPU
+        // GPU: transfer mapped key column to host for PE assignment
+        auto arrow_table = table->to_arrow();
+        auto key_array = arrow_table->GetColumnByName("_mapped_key");
         for (int j = 0; j < key_array->length(); j++)
         {
             int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(j).ValueOrDie())->value];
             indices[pe].push_back(j);
         }
+#else
+        ChunkedArrayPtr key_array = table->GetColumnByName("_mapped_key");
+        for (int j = 0; j < key_array->length(); j++)
+        {
+            int pe = pe_map[std::dynamic_pointer_cast<arrow::UInt32Scalar>(key_array->GetScalar(j).ValueOrDie())->value];
+            indices[pe].push_back(j);
+        }
+#endif
 
         for (int j = 0; j < CkNumPes(); j++)
         {
             if (indices[j].size() > 0)
             {
+#ifdef USE_GPU
+                // GPU: build gather map on device and use cudf::gather
+                auto indices_col = cudf::make_fixed_width_column(
+                    cudf::data_type{cudf::type_id::INT32}, indices[j].size());
+                cudaMemcpy(indices_col->mutable_view().data<int32_t>(),
+                    indices[j].data(), indices[j].size() * sizeof(int32_t),
+                    cudaMemcpyHostToDevice);
+                auto gathered = cudf::gather(table->view(), indices_col->view());
+                auto selected = std::make_shared<GpuTable>(
+                    std::move(gathered), std::vector<std::string>(table->field_names()));
+#else
                 ChunkedArrayPtr indices_array = array_from_vector(indices[j]);
                 TablePtr selected = arrow::compute::Take(table, indices_array).ValueOrDie().table();
+#endif
                 if (j == CkMyPe())
                 {
                     auto it = redist_tables.find(table_name);
                     if (it == std::end(redist_tables))
                         redist_tables[table_name] = selected;
                     else
+                    {
+#ifdef USE_GPU
+                        std::vector<TablePtr> to_concat = {it->second, selected};
+                        it->second = gpu_concatenate(to_concat);
+#else
                         it->second = arrow::ConcatenateTables({it->second, selected}).ValueOrDie();
+#endif
+                    }
                 }
                 else
                 {
@@ -1540,21 +2020,20 @@ void Aggregator::shuffle_data(std::vector<int> pe_map, std::vector<int> expected
     {
         if (i != CkMyPe() && total_size[i] > 0)
         {
-            // build redist message
             RedistTableMsg* msg = new (total_size[i], serialized_buffers[i].size()) RedistTableMsg(
                 serialized_buffers[i], total_size[i]);
             thisProxy[i].receive_shuffle_data(msg);
         }
     }
 
-    for (int i = 0; i < redist_table_names[i]; i++)
+    for (int i = 0; i < redist_table_names.size(); i++)
     {
         int table_name = redist_table_names[i];
         tables.erase(table_name);
 
-        for (int i = 0; i < num_local_chares; i++)
+        for (int j = 0; j < num_local_chares; j++)
         {
-            int index = local_chares[i];
+            int index = local_chares[j];
             partition_proxy[index].ckLocal()->remove_table(table_name);
         }
     }
@@ -1603,6 +2082,15 @@ void Aggregator::redist_callback()
 
 void Aggregator::groupby_callback()
 {
+#ifdef USE_GPU
+    if (tables[TEMP_TABLE_OFFSET + next_temp_name] != nullptr && tables[TEMP_TABLE_OFFSET + next_temp_name]->num_rows() > 0)
+    {
+        TablePtr result = gpu_groupby(tables[TEMP_TABLE_OFFSET + next_temp_name],
+            groupby_opts->key_names, groupby_opts->aggregations, groupby_opts->result_names);
+        result = gpu_clean_metadata(result);
+        partition_table(result, groupby_opts->result_name);
+    }
+#else
     // update groupby options
     if (is_two_level_agg(*groupby_opts->opts))
     {
@@ -1621,17 +2109,34 @@ void Aggregator::groupby_callback()
         result = clean_metadata(result);
         partition_table(result, groupby_opts->result_name);
     }
-    
+#endif
+
     complete_groupby();
 }
 
 void Aggregator::join_callback()
 {
+#ifdef USE_GPU
+    // GPU: resolve key column indices for gpu_join
+    std::vector<cudf::size_type> left_on, right_on;
+    for (auto const& key : join_opts->left_keys)
+        left_on.push_back(tables[join_opts->table1]->GetColumnIndex(key));
+    for (auto const& key : join_opts->right_keys)
+        right_on.push_back(tables[join_opts->table2]->GetColumnIndex(key));
+
+    TablePtr result = gpu_join(tables[join_opts->table1], tables[join_opts->table2],
+        left_on, right_on, join_opts->join_type);
+    result = gpu_clean_metadata(result);
+    partition_table(tables[join_opts->table1], join_opts->table1);
+    partition_table(tables[join_opts->table2], join_opts->table2);
+    partition_table(result, join_opts->result_name);
+#else
     TablePtr result = local_join(tables[join_opts->table1], tables[join_opts->table2], *join_opts->opts);
     result = clean_metadata(result);
     partition_table(tables[join_opts->table1], join_opts->table1);
     partition_table(tables[join_opts->table2], join_opts->table2);
     partition_table(result, join_opts->result_name);
+#endif
     complete_join();
 }
 
@@ -1647,7 +2152,14 @@ void Aggregator::receive_shuffle_data(RedistTableMsg* msg)
         if (it == std::end(redist_tables))
             redist_tables[table_name] = remote_tables[i];
         else
+        {
+#ifdef USE_GPU
+            std::vector<TablePtr> to_concat = {it->second, remote_tables[i]};
+            it->second = gpu_concatenate(to_concat);
+#else
             it->second = arrow::ConcatenateTables({it->second, remote_tables[i]}).ValueOrDie();
+#endif
+        }
         total_redist_rows += redist_tables[table_name]->num_rows();
     }
 
@@ -1681,12 +2193,12 @@ void Aggregator::complete_operation()
 
 void Aggregator::complete_groupby()
 {
-    //CkPrintf("PE%i> Completed groupby\n", CkMyPe());
     tables.erase(groupby_opts->table_name);
+#ifndef USE_GPU
     delete groupby_opts->opts;
+#endif
     delete groupby_opts;
     groupby_opts = nullptr;
-    //EPOCH++;
     tables.erase(TEMP_TABLE_OFFSET + next_temp_name++);
 
     complete_operation();
@@ -1694,13 +2206,13 @@ void Aggregator::complete_groupby()
 
 void Aggregator::complete_join()
 {
-    //CkPrintf("PE%i> Completed join\n", CkMyPe());
     tables.erase(join_opts->table1);
     tables.erase(join_opts->table2);
+#ifndef USE_GPU
     delete join_opts->opts;
+#endif
     delete join_opts;
     join_opts = nullptr;
-    //EPOCH++;
 
     complete_operation();
 }
@@ -1717,6 +2229,7 @@ void Aggregator::complete_sort_values()
     complete_operation();
 }
 
+#ifndef USE_GPU
 TablePtr Aggregator::local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts)
 {
     arrow::acero::Declaration left{"table_source", arrow::acero::TableSourceNodeOptions(t1)};
@@ -1727,6 +2240,7 @@ TablePtr Aggregator::local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJo
     // Collect the results
     return arrow::acero::DeclarationToTable(std::move(hashjoin)).ValueOrDie();
 }
+#endif
 
 void Aggregator::partition_table(TablePtr table, int result_name)
 {
@@ -1753,4 +2267,96 @@ void Aggregator::start_polling()
     CkPrintf("Resume polling\n");
     thisProxy.poll();
     partition_proxy.poll();
+}
+
+// GPU-aware message handlers (stubs — used when USE_GPU is defined for RDMA transfers)
+void Aggregator::gpu_gather_table(GpuGatherMsg* msg)
+{
+#ifdef USE_GPU
+    auto table = msg->get_table();
+
+    auto it = gpu_gather_buffer.find(msg->epoch);
+    if (it == gpu_gather_buffer.end())
+        gpu_gather_buffer[msg->epoch] = std::vector<GpuGatherMsg*>();
+
+    gpu_gather_buffer[msg->epoch].push_back(msg);
+
+    // Check if all partitions have reported
+    if (static_cast<int>(gpu_gather_buffer[msg->epoch].size()) == num_partitions)
+    {
+        std::vector<TablePtr> gathered_tables;
+        for (auto* m : gpu_gather_buffer[msg->epoch])
+        {
+            auto t = m->get_table();
+            if (t != nullptr && t->num_rows() > 0)
+                gathered_tables.push_back(t);
+        }
+
+        auto combined_table = gpu_concatenate(gathered_tables);
+        CkPrintf("GPU gathered table data with size = %i\n", combined_table->num_rows());
+        BufferPtr out;
+        serialize(combined_table, out);
+        fetch_callback(msg->epoch, out);
+
+        gpu_gather_buffer.erase(msg->epoch);
+    }
+#endif
+}
+
+void Aggregator::gpu_receive_shuffle_data(GpuRedistMsg* msg)
+{
+#ifdef USE_GPU
+    auto remote_tables = msg->get_tables();
+
+    int total_redist_rows = 0;
+    for (size_t i = 0; i < remote_tables.size(); i++)
+    {
+        int table_name = redist_table_names[i];
+        auto it = redist_tables.find(table_name);
+        if (it == std::end(redist_tables))
+            redist_tables[table_name] = remote_tables[i];
+        else
+        {
+            std::vector<TablePtr> to_concat = {it->second, remote_tables[i]};
+            it->second = gpu_concatenate(to_concat);
+        }
+        total_redist_rows += redist_tables[table_name]->num_rows();
+    }
+
+    if (expected_rows != -1 && total_redist_rows == expected_rows)
+    {
+        for (size_t i = 0; i < redist_table_names.size(); i++)
+        {
+            int table_name = redist_table_names[i];
+            tables[table_name] = redist_tables[table_name];
+            redist_tables.erase(table_name);
+        }
+        redist_callback();
+    }
+#endif
+}
+
+void Aggregator::gpu_receive_sort_tables(GpuTableMsg* msg)
+{
+#ifdef USE_GPU
+    auto received_table = msg->get_table();
+
+    auto it = tables.find(TEMP_TABLE_OFFSET + next_temp_name);
+    if (it == std::end(tables))
+        tables[TEMP_TABLE_OFFSET + next_temp_name] = received_table;
+    else
+    {
+        std::vector<TablePtr> to_concat = {it->second, received_table};
+        it->second = gpu_concatenate(to_concat);
+    }
+
+    if (++sort_tables_collected == CkNumPes())
+    {
+        tables[TEMP_TABLE_OFFSET + next_temp_name] = gpu_sort(
+            tables[TEMP_TABLE_OFFSET + next_temp_name],
+            sort_values_opts->sort_key_names, sort_values_opts->sort_orders);
+        partition_table(tables[TEMP_TABLE_OFFSET + next_temp_name], sort_values_opts->result_name);
+        complete_sort_values();
+    }
+#endif
 }

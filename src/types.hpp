@@ -8,7 +8,15 @@
 #include <arrow/scalar.h>
 #include <arrow/compute/api.h>
 
+#ifdef USE_GPU
+#include "gpu_table.hpp"
+using TablePtr = std::shared_ptr<GpuTable>;
+#else
 using TablePtr = std::shared_ptr<arrow::Table>;
+#endif
+
+// Always available — used at serialization boundaries (Python fetch, PUP)
+using ArrowTablePtr = std::shared_ptr<arrow::Table>;
 using ArrayPtr = std::shared_ptr<arrow::Array>;
 using ScalarPtr = std::shared_ptr<arrow::Scalar>;
 using ChunkedArrayPtr = std::shared_ptr<arrow::ChunkedArray>;

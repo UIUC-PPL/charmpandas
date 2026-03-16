@@ -163,4 +163,126 @@ public:
     {}
 };
 
+// ============================================================================
+// GPU-aware messages for RDMA transfer
+// Always declared (since .ci declares them unconditionally),
+// but get_table() only available under USE_GPU.
+// ============================================================================
+
+class GpuTableMsg : public CMessage_GpuTableMsg
+{
+public:
+    char* metadata;      // host: cudf packed metadata + column names
+    char* gpu_data;      // device: contiguous table data (GPU-Direct RDMA)
+    int metadata_size;
+    int gpu_data_size;
+    int epoch;
+
+    GpuTableMsg(int epoch_, int metadata_size_, int gpu_data_size_)
+        : epoch(epoch_)
+        , metadata_size(metadata_size_)
+        , gpu_data_size(gpu_data_size_)
+    {}
+
+#ifdef USE_GPU
+    TablePtr get_table()
+    {
+        if (gpu_data_size > 0)
+            return gpu_unpack(
+                reinterpret_cast<const uint8_t*>(metadata),
+                reinterpret_cast<const uint8_t*>(gpu_data),
+                gpu_data_size);
+        else
+            return nullptr;
+    }
+#endif
+};
+
+class GpuGatherMsg : public CMessage_GpuGatherMsg
+{
+public:
+    char* metadata;
+    char* gpu_data;
+    int metadata_size;
+    int gpu_data_size;
+    int epoch;
+    int chareIdx;
+    int num_partitions;
+
+    GpuGatherMsg(int epoch_, int metadata_size_, int gpu_data_size_,
+        int chareIdx_, int num_partitions_)
+        : epoch(epoch_)
+        , metadata_size(metadata_size_)
+        , gpu_data_size(gpu_data_size_)
+        , chareIdx(chareIdx_)
+        , num_partitions(num_partitions_)
+    {}
+
+#ifdef USE_GPU
+    TablePtr get_table()
+    {
+        if (gpu_data_size > 0)
+            return gpu_unpack(
+                reinterpret_cast<const uint8_t*>(metadata),
+                reinterpret_cast<const uint8_t*>(gpu_data),
+                gpu_data_size);
+        else
+            return nullptr;
+    }
+#endif
+};
+
+class GpuRedistMsg : public CMessage_GpuRedistMsg
+{
+public:
+    char* metadata;      // host: per-table cudf metadata + column names
+    int* offsets;        // host: byte offset of each table in gpu_data
+    char* gpu_data;      // device: concatenated table data (GPU-Direct RDMA)
+    int num_tables;
+    int total_metadata_size;
+    int total_gpu_size;
+
+    GpuRedistMsg(int num_tables_, int total_metadata_size_, int total_gpu_size_)
+        : num_tables(num_tables_)
+        , total_metadata_size(total_metadata_size_)
+        , total_gpu_size(total_gpu_size_)
+    {}
+
+#ifdef USE_GPU
+    std::vector<TablePtr> get_tables()
+    {
+        std::vector<TablePtr> result;
+        int meta_offset = 0;
+        for (int i = 0; i < num_tables; i++)
+        {
+            int gpu_offset = offsets[i];
+            int gpu_size = (i + 1 < num_tables)
+                ? offsets[i + 1] - gpu_offset
+                : total_gpu_size - gpu_offset;
+
+            if (gpu_size > 0)
+            {
+                result.push_back(gpu_unpack(
+                    reinterpret_cast<const uint8_t*>(metadata + meta_offset),
+                    reinterpret_cast<const uint8_t*>(gpu_data + gpu_offset),
+                    gpu_size));
+            }
+            else
+            {
+                result.push_back(nullptr);
+            }
+
+            // Advance past this table's host metadata
+            uint32_t meta_size = *reinterpret_cast<const uint32_t*>(
+                metadata + meta_offset);
+            meta_offset += sizeof(uint32_t) + meta_size;
+            uint32_t names_size = *reinterpret_cast<const uint32_t*>(
+                metadata + meta_offset);
+            meta_offset += sizeof(uint32_t) + names_size;
+        }
+        return result;
+    }
+#endif
+};
+
 #endif

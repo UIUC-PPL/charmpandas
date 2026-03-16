@@ -18,6 +18,10 @@
 #include "types.hpp"
 #include "partition.decl.h"
 
+#ifdef USE_GPU
+#include "gpu_ops.hpp"
+#endif
+
 
 #define RIGHT 0
 #define LEFT 1
@@ -26,13 +30,30 @@
 // This needs to have client id in the key
 extern std::unordered_map<int, CcsDelayedReply> fetch_reply;
 
+#ifdef USE_GPU
+TablePtr gpu_clean_metadata(TablePtr &table);
+#else
 TablePtr clean_metadata(TablePtr &table);
+#endif
 
 class JoinOptions
 {
 public:
     int table1, table2;
     int result_name;
+#ifdef USE_GPU
+    std::vector<std::string> left_keys;
+    std::vector<std::string> right_keys;
+    arrow::acero::JoinType join_type;
+
+    JoinOptions(int table1_, int table2_, int result_name_,
+        std::vector<std::string> left_keys_, std::vector<std::string> right_keys_,
+        arrow::acero::JoinType join_type_)
+        : table1(table1_), table2(table2_), result_name(result_name_)
+        , left_keys(std::move(left_keys_)), right_keys(std::move(right_keys_))
+        , join_type(join_type_)
+    {}
+#else
     arrow::acero::HashJoinNodeOptions* opts;
 
     JoinOptions(int table1_, int table2_, int result_name_, arrow::acero::HashJoinNodeOptions* opts_)
@@ -41,6 +62,7 @@ public:
         , result_name(result_name_)
         , opts(opts_)
     {}
+#endif
 };
 
 class GroupByOptions
@@ -48,6 +70,21 @@ class GroupByOptions
 public:
     int table_name;
     int result_name;
+#ifdef USE_GPU
+    std::vector<std::string> key_names;
+    std::vector<std::pair<AggregateOperation, std::string>> aggregations;  // (op, target_col)
+    std::vector<std::string> result_names;
+
+    GroupByOptions(int table_name_, int result_name_,
+        std::vector<std::string> key_names_,
+        std::vector<std::pair<AggregateOperation, std::string>> aggregations_,
+        std::vector<std::string> result_names_)
+        : table_name(table_name_), result_name(result_name_)
+        , key_names(std::move(key_names_))
+        , aggregations(std::move(aggregations_))
+        , result_names(std::move(result_names_))
+    {}
+#else
     arrow::acero::AggregateNodeOptions* opts;
 
     GroupByOptions(int table_name_, int result_name_, arrow::acero::AggregateNodeOptions* opts_)
@@ -55,6 +92,7 @@ public:
         , result_name(result_name_)
         , opts(opts_)
     {}
+#endif
 };
 
 class SortValuesOptions
@@ -62,6 +100,18 @@ class SortValuesOptions
 public:
     int table_name;
     int result_name;
+#ifdef USE_GPU
+    std::vector<std::string> sort_key_names;
+    std::vector<cudf::order> sort_orders;
+
+    SortValuesOptions(int table_name_, int result_name_,
+        std::vector<std::string> sort_key_names_,
+        std::vector<cudf::order> sort_orders_)
+        : table_name(table_name_), result_name(result_name_)
+        , sort_key_names(std::move(sort_key_names_))
+        , sort_orders(std::move(sort_orders_))
+    {}
+#else
     std::vector<arrow::compute::SortKey> sort_keys;
     arrow::Type::type sort_column_type;
 
@@ -71,6 +121,7 @@ public:
         , sort_keys(sort_keys_)
         , sort_column_type(sort_column_type_)
     {}
+#endif
 };
 
 class PELoad
@@ -117,6 +168,9 @@ private:
 
     std::unordered_map<int, int> gather_count;
     std::unordered_map<int, std::vector<GatherTableDataMsg*>> gather_buffer;
+#ifdef USE_GPU
+    std::unordered_map<int, std::vector<GpuGatherMsg*>> gpu_gather_buffer;
+#endif
 
     std::vector<int> local_chares;
 
@@ -168,7 +222,7 @@ public:
     void register_local_chare(int index);
 
     void gather_table(GatherTableDataMsg* msg);
-    
+
     void clear_gather_buffer(int epoch);
 
     void fetch_callback(int epoch, BufferPtr &out);
@@ -177,8 +231,15 @@ public:
 
     void handle_deletions(char* &cmd);
 
+#ifdef USE_GPU
+    void redistribute(std::vector<int> table_names, std::vector<std::vector<std::string>> &keys,
+        RedistOperation oper);
+    TablePtr map_keys(TablePtr &table, std::vector<std::string> &fields);
+#else
     void redistribute(std::vector<int> table_names, std::vector<std::vector<arrow::FieldRef>> &keys,
         RedistOperation oper);
+    TablePtr map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fields);
+#endif
 
     void redist_callback();
 
@@ -198,15 +259,16 @@ public:
 
     void receive_sort_tables(SortTableMsg* msg);
 
-    //void operation_barrier(char* cmd);
+    // GPU-aware message handlers
+    void gpu_gather_table(GpuGatherMsg* msg);
+    void gpu_receive_shuffle_data(GpuRedistMsg* msg);
+    void gpu_receive_sort_tables(GpuTableMsg* msg);
 
     void execute_command(int epoch, int size, char* cmd);
 
     void start_join();
 
     void update_histogram(TablePtr table, std::vector<int> &hist);
-
-    TablePtr map_keys(TablePtr &table, std::vector<arrow::FieldRef> &fields);
 
     void assign_keys(int num_elements, int* global_hist);
 
@@ -222,15 +284,16 @@ public:
 
     void complete_sort_values();
 
+#ifdef USE_GPU
+    TablePtr local_join(TablePtr &t1, TablePtr &t2);
+#else
     TablePtr local_join(TablePtr &t1, TablePtr &t2, arrow::acero::HashJoinNodeOptions &opts);
+#endif
 
     void partition_table(TablePtr table, int result_name);
 
     void barrier_handler(int epoch);
 
-    //void aggregator_barrier(int agg_epoch);
-
-    //template<typename T>
     void reduction_result_int(int result, int epoch);
 
     void reduction_result_long(int64_t result, int epoch);
@@ -306,15 +369,18 @@ public:
 
     void operation_reduction(char* cmd);
 
+#ifdef USE_GPU
+    GpuDatum extract_operand(char* &msg);
+    GpuDatum traverse_ast(char* &msg);
+#else
     ScalarPtr local_reduction(TablePtr& table, std::string& col_name, AggregateOperation& op);
+    arrow::Datum extract_operand(char* &msg);
+    arrow::Datum traverse_ast(char* &msg);
+#endif
 
     void aggregate_result(CkReductionMsg* msg);
 
     void execute_command(int epoch, int size, char* cmd);
-
-    arrow::Datum extract_operand(char* &msg);
-
-    arrow::Datum traverse_ast(char* &msg);
 
     void read_parquet(int table_name, std::string file_path);
 

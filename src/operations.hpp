@@ -69,6 +69,7 @@ std::string get_array_operation(ArrayOperation op)
     }
 }
 
+#ifndef USE_GPU
 inline arrow::Datum execute_operation(ArrayOperation op, std::vector<arrow::Datum> operands)
 {
     return arrow::compute::CallFunction(get_array_operation(op), operands).ValueOrDie();
@@ -84,5 +85,6 @@ inline TablePtr set_column(TablePtr table, std::string field_name, arrow::Datum 
     else
         return table->SetColumn(field_index, result_field, result).ValueOrDie();
 }
+#endif // !USE_GPU
 
 #endif

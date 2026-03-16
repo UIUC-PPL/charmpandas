@@ -47,6 +47,7 @@ inline Operation lookup_operation(int opcode)
     return static_cast<Operation>(opcode);
 }
 
+#ifndef USE_GPU
 inline TablePtr sort_table(TablePtr table, std::string col_name)
 {
     arrow::compute::SortOptions sort_options;
@@ -68,5 +69,6 @@ inline ChunkedArrayPtr array_from_vector(std::vector<int> &indices)
     builder.AppendValues(indices.data(), indices.size());
     return arrow::ChunkedArray::Make({builder.Finish().ValueOrDie()}).ValueOrDie();
 }
+#endif // !USE_GPU
 
 #endif

@@ -164,6 +164,7 @@ arrow::acero::AggregateNodeOptions* extract_aggregate_options(char* msg, bool is
     return opts;
 }
 
+#ifndef USE_GPU
 bool is_two_level_agg(arrow::acero::AggregateNodeOptions& opts)
 {
     for (int i = 0; i < opts.aggregates.size(); i++)
@@ -196,6 +197,7 @@ TablePtr local_aggregation(TablePtr &table, arrow::acero::AggregateNodeOptions &
     arrow::acero::Declaration aggregate{"aggregate", {source}, agg_opts};
     return arrow::acero::DeclarationToTable(std::move(aggregate)).ValueOrDie();
 }
+#endif // !USE_GPU
 
 /*CkReductionMsg* aggregate_reducer(int nmsgs, CkReductionMsg** msgs)
 {

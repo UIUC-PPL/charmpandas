@@ -3,6 +3,13 @@ CHARMC=$(CHARMDIR)/netlrts-linux-x86_64/bin/charmc
 CHARM_INC=-I$(CHARMDIR)/include
 OPTS=-c++-option -std=c++17 -O3 -g -ldl -DNDEBUG -I$(VCPKG_DIR)/include -I$(XXHASH_DIR)/include
 
+# GPU support via libcudf (build with: make USE_GPU=1 CUDF_DIR=... RMM_DIR=...)
+ifdef USE_GPU
+GPU_FLAGS=-DUSE_GPU -I$(CUDF_DIR)/include -I$(RMM_DIR)/include
+GPU_LIBS=-lcudf -lcudart -lrmm
+OPTS+= $(GPU_FLAGS)
+endif
+
 all: server.out
 
 .PHONY: clean server.out
@@ -33,11 +40,12 @@ server.o: server.cpp server.decl.h server.def.h server.hpp \
 	$(CHARMC) `pkg-config --cflags --libs arrow` -module CommonLBs -c $< $(OPTS)
 
 partition.o: partition.cpp partition.decl.h partition.def.h reduction.decl.h reduction.def.h \
-	messaging.decl.h messaging.def.h partition.hpp utils.hpp messaging.hpp serialize.hpp reduction.hpp
+	messaging.decl.h messaging.def.h partition.hpp utils.hpp messaging.hpp serialize.hpp reduction.hpp \
+	gpu_table.hpp gpu_ops.hpp
 	$(CHARMC) `pkg-config --cflags --libs arrow` -module CommonLBs -c $< $(OPTS)
 
 server.out: partition.o server.o
-	$(CHARMC) -Wl,-rpath,/u/bhosale/.conda/envs/charmpandas/lib `pkg-config --cflags --libs arrow` -L$(XXHASH_DIR)/lib -g -lxxhash -lparquet -larrow_acero -language charm++ -module CommonLBs -o $@ partition.o server.o
+	$(CHARMC) -Wl,-rpath,/u/bhosale/.conda/envs/charmpandas/lib `pkg-config --cflags --libs arrow` -L$(XXHASH_DIR)/lib -g -lxxhash -lparquet -larrow_acero $(GPU_LIBS) -language charm++ -module CommonLBs -o $@ partition.o server.o
 
 run-server: server.out
 	./charmrun +p4 ./server.out ++server ++server-port 10000

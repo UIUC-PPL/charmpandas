@@ -42,6 +42,11 @@ module partition
 
         entry void receive_shuffle_data(RedistTableMsg* msg);
 
+        // GPU-aware message entry methods (for RDMA transfers)
+        entry void gpu_gather_table(GpuGatherMsg* msg);
+        entry void gpu_receive_shuffle_data(GpuRedistMsg* msg);
+        entry void gpu_receive_sort_tables(GpuTableMsg* msg);
+
         entry [reductiontarget] void barrier_handler(int epoch);
 
         //template <typename T>

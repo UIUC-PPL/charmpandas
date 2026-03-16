@@ -27,4 +27,24 @@ module messaging
     };
 
     message LocalJoinMsg;
+
+    // GPU-aware messages for RDMA transfer (used when USE_GPU is defined)
+    message GpuTableMsg
+    {
+        char metadata[];     // host: cudf packed metadata + column names
+        char gpu_data[];     // device: contiguous table data (GPU-Direct RDMA)
+    };
+
+    message GpuGatherMsg
+    {
+        char metadata[];     // host: cudf packed metadata + column names
+        char gpu_data[];     // device: contiguous table data (GPU-Direct RDMA)
+    };
+
+    message GpuRedistMsg
+    {
+        char metadata[];     // host: per-table cudf metadata + column names
+        int offsets[];       // host: byte offset of each table in gpu_data
+        char gpu_data[];     // device: concatenated table data (GPU-Direct RDMA)
+    };
 }
