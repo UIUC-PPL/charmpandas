@@ -10,7 +10,9 @@
 #include "messaging.hpp"
 #include "reduction.hpp"
 #include "serialize.hpp"
+#include <arrow/compute/initialize.h>
 #include "partition.hpp"
+#include "sortinglib/sortinglib.h"
 #include "messaging.def.h"
 #define CK_TEMPLATES_ONLY
 #include "partition.def.h"
@@ -133,7 +135,6 @@ void Partition::reduction_result_float(float result)
 
 
 Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_)
-Partition::Partition(int num_partitions_, int lb_period_, CProxy_Aggregator agg_proxy_)
     : num_partitions(num_partitions_)
     , agg_proxy(agg_proxy_)
     , EPOCH(0)
@@ -199,7 +200,6 @@ void Partition::pup(PUP::er &p)
         agg_proxy.ckLocalBranch()->register_local_chare(thisIndex);
         //CkPrintf("Chare %i> Resume polling waiting for epoch = %i\n", thisIndex, EPOCH);
         //thisProxy[thisIndex].poll();
-    }*/
 }
 
 void Partition::pup_tables(PUP::er &p)
@@ -760,8 +760,7 @@ void Partition::read_parquet(int table_name, std::string file_path)
         input_file = arrow::io::ReadableFile::Open(file).ValueOrDie();
 
         // Create a ParquetFileReader instance
-        std::unique_ptr<parquet::arrow::FileReader> reader;
-        parquet::arrow::OpenFile(input_file, arrow::default_memory_pool(), &reader);
+        auto reader = parquet::arrow::OpenFile(input_file, arrow::default_memory_pool()).ValueOrDie();
 
         // Get the file metadata
         std::shared_ptr<parquet::FileMetaData> file_metadata = reader->parquet_reader()->metadata();
@@ -859,7 +858,13 @@ Aggregator::Aggregator(CProxy_Main main_proxy_)
         , next_temp_name(0)
         , agg_samples_collected(0)
         , sort_tables_collected(0)
+        , dataIn(nullptr)
+        , dataOut(nullptr)
+        , out_elems(0)
+        , hss_boundaries_collected(0)
 {
+    arrow::compute::Initialize();
+
     if (MEM_LOGGING)
     {
         init_memory_logging();
@@ -1194,6 +1199,121 @@ void Aggregator::collect_samples(int num_samples, int64_t samples[num_samples])
     }
 }
 
+uint64_t getRandom()
+{
+    static thread_local std::mt19937_64 rng(0x9e3779b97f4a7c15ULL ^ CkMyPe());
+    return rng();
+}
+
+static inline uint64_t encode_key(int64_t v)
+{
+    return static_cast<uint64_t>(v) ^ (1ULL << 63);
+}
+
+static inline int64_t decode_key(uint64_t u)
+{
+    return static_cast<int64_t>(u ^ (1ULL << 63));
+}
+
+void Aggregator::operation_hss_sort(char* cmd)
+{
+    int table_name = extract<int>(cmd);
+    int result_name = extract<int>(cmd);
+    int nkeys = extract<int>(cmd);
+    std::vector<std::string> keys;
+    for (int i = 0; i < nkeys; i++)
+    {
+        int key_size = extract<int>(cmd);
+        keys.push_back(std::string(cmd, key_size));
+        cmd += key_size;
+    }
+    bool ascending = extract<bool>(cmd);
+
+    std::vector<arrow::compute::SortKey> sort_keys;
+    for (const std::string& key : keys)
+        sort_keys.push_back(arrow::compute::SortKey(arrow::FieldRef(key),
+            ascending ? arrow::compute::SortOrder::Ascending : arrow::compute::SortOrder::Descending));
+
+    tables[table_name] = get_local_table(table_name);
+    auto column = tables[table_name]->GetColumnByName(keys[0]);
+    auto type = column->type()->id();
+    sort_values_opts = new SortValuesOptions(table_name, result_name, sort_keys, type);
+
+    int64_t n = column->length();
+    dataIn = new uint64_t[n > 0 ? n : 1];
+    for (int64_t i = 0; i < n; i++)
+    {
+        int64_t key_val;
+        switch (type)
+        {
+            case arrow::Type::INT64:
+                key_val = std::dynamic_pointer_cast<arrow::Int64Scalar>(column->GetScalar(i).ValueOrDie())->value;
+                break;
+            case arrow::Type::TIMESTAMP:
+                key_val = std::dynamic_pointer_cast<arrow::TimestampScalar>(column->GetScalar(i).ValueOrDie())->value;
+                break;
+            case arrow::Type::INT32:
+                key_val = (int64_t) std::dynamic_pointer_cast<arrow::Int32Scalar>(column->GetScalar(i).ValueOrDie())->value;
+                break;
+            case arrow::Type::DOUBLE:
+                key_val = (int64_t) std::dynamic_pointer_cast<arrow::DoubleScalar>(column->GetScalar(i).ValueOrDie())->value;
+                break;
+            default:
+                CkAbort("HSS sort: unsupported column type for key extraction");
+        }
+        dataIn[i] = encode_key(key_val);
+    }
+
+    CB = CkCallback(CkIndex_Aggregator::SortingDone(), thisProxy[CkMyPe()]);
+    out_elems = 0;
+    dataOut = nullptr;
+    HistSorting<uint64_t>((int) n, dataIn, &out_elems, &dataOut, -1, &CB);
+}
+
+void Aggregator::SortingDone()
+{
+    int has_data = (out_elems > 0) ? 1 : 0;
+    int64_t boundary = has_data ? decode_key(dataOut[0]) : 0;
+
+    thisProxy[0].collect_hss_boundaries(CkMyPe(), has_data, boundary);
+
+    delete[] dataIn;
+    dataIn = nullptr;
+    dataOut = nullptr;
+    out_elems = 0;
+}
+
+void Aggregator::collect_hss_boundaries(int pe, int has_data, int64_t boundary)
+{
+    CkAssert(CkMyPe() == 0);
+
+    if (hss_boundaries.empty())
+    {
+        hss_boundaries.assign(CkNumPes(), 0);
+        hss_has_data.assign(CkNumPes(), 0);
+    }
+    hss_boundaries[pe] = boundary;
+    hss_has_data[pe] = (char) has_data;
+
+    if (++hss_boundaries_collected == CkNumPes())
+    {
+        std::vector<int64_t> splitters(CkNumPes() - 1);
+        int64_t last = std::numeric_limits<int64_t>::min();
+        for (int i = 1; i < CkNumPes(); i++)
+        {
+            if (hss_has_data[i])
+                last = hss_boundaries[i];
+            splitters[i - 1] = last;
+        }
+
+        hss_boundaries_collected = 0;
+        hss_boundaries.clear();
+        hss_has_data.clear();
+
+        thisProxy.receive_splitters(splitters.size(), splitters.data());
+    }
+}
+
 void Aggregator::receive_splitters(int num_splitters, int64_t splitters[num_splitters])
 {
     assert(num_splitters == CkNumPes() - 1);
@@ -1240,7 +1360,7 @@ void Aggregator::receive_splitters(int num_splitters, int64_t splitters[num_spli
              ? (CkNumPes() - 1 - i)
              : i;
 
-        thisProxy[index_to_send].receive_sort_tables(msg);
+        thisProxy[receiver_idx].receive_sort_tables(msg);
     }
 }
 
@@ -1303,7 +1423,7 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
 
         case Operation::SortValues:
         {
-            operation_sort_values(cmd);
+            operation_hss_sort(cmd);
             break;
         }
 

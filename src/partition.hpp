@@ -141,6 +141,15 @@ private:
     std::vector<int64_t> all_samples;
     SortValuesOptions* sort_values_opts;
 
+    // for HSS (histogram sort)
+    uint64_t* dataIn;
+    uint64_t* dataOut;
+    int out_elems;
+    CkCallback CB;
+    int hss_boundaries_collected;
+    std::vector<int64_t> hss_boundaries;
+    std::vector<char> hss_has_data;
+
     int EPOCH;
 
 public:
@@ -191,6 +200,12 @@ public:
     void operation_groupby(char* cmd);
 
     void operation_sort_values(char* cmd);
+
+    void operation_hss_sort(char* cmd);
+
+    void SortingDone();
+
+    void collect_hss_boundaries(int pe, int has_data, int64_t boundary);
 
     void collect_samples(int num_samples, int64_t samples[num_samples]);
 

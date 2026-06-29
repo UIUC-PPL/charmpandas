@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# charmc generated / compiled outputs
+src/*.decl.h
+src/*.def.h
+src/*.o
+src/*.out
+src/charmrun
+src/server.log
+src/localnodelist
+
+# HSS (sortinglib) generated / compiled outputs
+src/sortinglib/HistSort.decl.h
+src/sortinglib/HistSort.def.h
+src/sortinglib/empty.C
+src/sortinglib/empty.o
+src/sortinglib/libmoduleHistSort.a
+src/sortinglib/.tags
