@@ -1423,7 +1423,11 @@ void Aggregator::execute_command(int epoch, int size, char* cmd)
 
         case Operation::SortValues:
         {
+#ifdef USE_HSS_SORT
             operation_hss_sort(cmd);
+#else
+            operation_sort_values(cmd);
+#endif
             break;
         }
 

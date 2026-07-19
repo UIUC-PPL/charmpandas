@@ -1,7 +1,12 @@
 #CHARMDIR=/home/adityapb1546/charm/charm
 CHARMC=$(CHARMDIR)/netlrts-darwin-arm8/bin/charmc
 CHARM_INC=-I$(CHARMDIR)/include
-OPTS=-c++-option -std=c++20 -O3 -g -ldl -DNDEBUG -I$(VCPKG_DIR)/include -I$(XXHASH_DIR)/include
+# Set USE_HSS_SORT=0 to use the old Arrow sample-sort instead of HSS.
+USE_HSS_SORT ?= 1
+ifeq ($(USE_HSS_SORT),1)
+HSS_FLAG=-DUSE_HSS_SORT
+endif
+OPTS=-c++-option -std=c++20 -O3 -g -ldl -DNDEBUG $(HSS_FLAG) -I$(VCPKG_DIR)/include -I$(XXHASH_DIR)/include
 
 all: server.out
 
