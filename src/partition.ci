@@ -2,6 +2,7 @@ module partition
 {
     extern module reduction;
     extern module messaging;
+    extern module HistSort;
 
     mainchare [migratable] Main
     {
@@ -31,6 +32,10 @@ module partition
         };
 
         entry void collect_samples(int num_samples, int64_t samples[num_samples]);
+
+        entry void SortingDone();
+
+        entry void collect_hss_boundaries(int pe, int has_data, int64_t boundary);
 
         entry void receive_splitters(int num_splitters, int64_t splitters[num_splitters]);
 
@@ -76,4 +81,12 @@ module partition
 
         entry [reductiontarget] void reduction_result_float(float result);
     };
+
+    chare HSSMain<uint64_t>;
+    message sampleMessage<uint64_t>;
+    message data_msg<uint64_t>;
+    message array_msg<uint64_t>;
+    chare Sorter<uint64_t>;
+    array [1D] Bucket<uint64_t>;
+    nodegroup NodeManager<uint64_t>;
 }

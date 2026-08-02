@@ -202,6 +202,7 @@ class CCSInterface(Interface):
 
     def fetch_table(self, table_name):
         self.activity_handler()
+        self.barrier()
         cmd = self.get_header(self.epoch)
 
         gcmd = self.get_deletion_header()
